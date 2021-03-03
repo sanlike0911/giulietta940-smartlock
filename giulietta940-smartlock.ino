@@ -385,7 +385,7 @@ void EventControl(EventID _emEventID) {
     // アンロック状態の場合はドアロック信号を送る
     if(STATUS_DOOR_UNLOCK == statusID){
       subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-      statusID = STATUS_PROVISIONAL_DOOR_UNLOCK;
+      statusID = STATUS_PROVISIONAL_DOOR_LOCK;
     }
     break;
   case EVENT_FOUND_BEACON:
@@ -393,7 +393,7 @@ void EventControl(EventID _emEventID) {
     // 通常ロック状態の場合はドアロック信号を送る
     if(STATUS_DOOR_LOCK == statusID){
       subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-      statusID = STATUS_PROVISIONAL_DOOR_LOCK;
+      statusID = STATUS_PROVISIONAL_DOOR_UNLOCK;
     }
     break;
   case EVENT_LOCK_LED_OFF:
