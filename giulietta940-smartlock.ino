@@ -1,9 +1,3 @@
-/*
-   Based on Neil Kolban example for IDF: https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleScan.cpp
-   Ported to Arduino ESP32 by Evandro Copercini
-   Changed to a beacon scanner to report iBeacon, EddystoneURL and EddystoneTLM beacons by beegee-tokyo
-*/
-
 #include <Arduino.h>
 #include <Ticker.h>
 
@@ -19,7 +13,7 @@
 #define SCAN_TIME                 (int)5  /* In seconds */
 #define PORT_OUT_ON_BORAD_LED     2
 #define PORT_IN_LOCK_LED          18
-#define PORT_IN_ACC               19
+#define PORT_IN_ACC               33
 #define PORT_OUT_DOOR_LOCK_SIGNAL 23
 #define TICKER_LOOP_CYCLE         200
 // LOCK LED入力：4回平均
@@ -27,7 +21,7 @@
 // Queue item size
 #define QUEUE_LENGTH              8
 
-// Event message
+// debug Event Message
 char *dbgEventMsg[] = {
   "EVENT_NON",
   "EVENT_LOST_BEACON",
@@ -38,7 +32,7 @@ char *dbgEventMsg[] = {
   "EVENT_ACC_ON",
   "EVENT_DOOR_LOCK_SIGNAL",
   "EVENT_DOOR_UNLOCK_SIGNAL",
-  NULL
+  "EVENT_MAX"
 };
 
 // Event ID
@@ -58,6 +52,25 @@ enum EventID {
 #define SUB_EVENT_NON                     0x00
 #define SUB_EVENT_SET_DOOR_LOCK_SIGNAL    0x01
 
+// debug Status Message
+char *dbgStatusMsg[] = {
+  "STATUS_NON",
+  "STATUS_DOOR_UNLOCK",
+  "STATUS_DOOR_LOCK",
+  "STATUS_PROVISIONAL_DOOR_UNLOCK",
+  "STATUS_PROVISIONAL_DOOR_LOCK",
+  "STATUS_MAX",
+};
+
+// Event ID
+enum STATUS_ID {
+  STATUS_NON = (uint8_t)0,
+  STATUS_DOOR_UNLOCK,
+  STATUS_DOOR_LOCK,
+  STATUS_PROVISIONAL_DOOR_UNLOCK,
+  STATUS_PROVISIONAL_DOOR_LOCK,
+  STATUS_MAX
+};
 
 //*****************************************************************************
 // macro function
@@ -73,11 +86,12 @@ enum EventID {
 //*****************************************************************************
 void bleScan();
 void dispLed();
-void EventAnalyze(EventID _emEventID);
+void EventControl(EventID _emEventID);
 void checkLockLed();
 void checkAcc();
 void doorLockSignalControl();
-void inGPIO();
+void GpiControl();
+void print_wakeup_reason();
 
 void task1( void *param );
 void task2( void *param );
@@ -101,9 +115,12 @@ volatile uint8_t  tm10000msEvent = 0;
 // Sub Event
 volatile uint8_t subEventID = SUB_EVENT_NON;
 
+// Status
+volatile STATUS_ID statusID = STATUS_NON;
+
 // BLE
 BLEScan *pBLEScan;
-volatile uint8_t _iBeaconScanStatus = 0;
+volatile uint8_t doConnectBleDevice = 0;
 
 // Ticker
 Ticker ticker;
@@ -126,7 +143,7 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
       if (_mybcn.createByAdvertisedDevice(advertisedDevice)) {
         //Serial.println("Found an iBeacon!");
         if (_mybcn.IsAdvertisedDevice("cb3b0426-10ec-45bd-b58e-f2858c0dbc2b")) {
-          _iBeaconScanStatus = 1;
+          doConnectBleDevice = 1;
           BLEDevice::getScan()->stop();
 #if 0
           char uuid[37];
@@ -159,6 +176,7 @@ void setup() {
 
   pinMode(PORT_IN_LOCK_LED, INPUT);
   pinMode(PORT_IN_LOCK_LED, INPUT_PULLUP);
+
   pinMode(PORT_IN_ACC, INPUT);
   pinMode(PORT_IN_ACC, INPUT_PULLUP);
 
@@ -169,6 +187,10 @@ void setup() {
   SERIAL_PRINTF("Flash Size %d, Flash Speed %d\n", ESP.getFlashChipSize(), ESP.getFlashChipSpeed());
   SERIAL_PRINTF("ChipRevision %d, Cpu Freq %d, SDK Version %s\n", ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getSdkVersion());
 
+  /* setup sleep ext0 wakeup */
+  print_wakeup_reason();
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_33,1); //1 = High, 0 = Low
+  
   /* create ticker */
   ticker.attach_ms(TICKER_LOOP_CYCLE, interruptTimer);
 
@@ -197,6 +219,27 @@ void setup() {
   pBLEScan = BLEDevice::getScan(); //create new scan
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
   pBLEScan->setActiveScan(false); //active scan uses more power, but get results faster
+}
+
+/**
+ * @brief print wakeup reason
+ * @author sanlike
+ * @date 2021/03/03
+ */
+void print_wakeup_reason() {
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 :      SERIAL_PRINTF("Wakeup caused by external signal using RTC_IO\n"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 :      SERIAL_PRINTF("Wakeup caused by external signal using RTC_CNTL\n"); break;
+    case ESP_SLEEP_WAKEUP_TIMER :     SERIAL_PRINTF("Wakeup caused by timer\n"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD :  SERIAL_PRINTF("Wakeup caused by touchpad\n"); break;
+    case ESP_SLEEP_WAKEUP_ULP :       SERIAL_PRINTF("Wakeup caused by ULP program\n"); break;
+    default :                         SERIAL_PRINTF("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
 }
 
 /**
@@ -235,7 +278,7 @@ EventID getEventQueue() {
  * @author sanlike
  * @date 2021/03/02
  */
-void inGPIO() {
+void GpiControl() {
   // IN:GPIO
   checkLockLed();
   checkAcc();
@@ -248,7 +291,7 @@ void inGPIO() {
  */
 void interruptTimer() {
 
-  inGPIO();
+  GpiControl();
 
   if ( ++tm400msCount >= (uint32_t)(400 / TICKER_LOOP_CYCLE) ) {
     tm400msCount = 0; tm400msEvent = 1;
@@ -268,20 +311,20 @@ void interruptTimer() {
  */
 void checkLockLed() {
   static byte _activeCount = 0;
-  static byte _inGpioStatusFix = 0xFF;
-  byte _inGpioStatus = digitalRead(PORT_IN_LOCK_LED);
-  if (HIGH == _inGpioStatus) {
+  static byte _GpiControlStatusFix = 0xFF;
+  byte _GpiControlStatus = digitalRead(PORT_IN_LOCK_LED);
+  if (HIGH == _GpiControlStatus) {
     _activeCount = 0;
-    if (HIGH != _inGpioStatusFix) {
+    if (HIGH != _GpiControlStatusFix) {
       setEventQueue(EVENT_LOCK_LED_OFF);
-      _inGpioStatusFix = _inGpioStatus;
+      _GpiControlStatusFix = _GpiControlStatus;
     }
   } else {
     if (++_activeCount >= AVERAGE_INPUT_GPIO) {
       _activeCount = AVERAGE_INPUT_GPIO;
-      if (LOW != _inGpioStatusFix) {
+      if (LOW != _GpiControlStatusFix) {
         setEventQueue(EVENT_LOCK_LED_ON);
-        _inGpioStatusFix = _inGpioStatus;
+        _GpiControlStatusFix = _GpiControlStatus;
       }
     }
   }
@@ -294,20 +337,20 @@ void checkLockLed() {
  */
 void checkAcc() {
   static byte _activeCount = 0;
-  static byte _inGpioStatusFix = 0xFF;
-  byte _inGpioStatus = digitalRead(PORT_IN_ACC);
-  if (HIGH == _inGpioStatus) {
+  static byte _GpiControlStatusFix = 0xFF;
+  byte _GpiControlStatus = digitalRead(PORT_IN_ACC);
+  if (HIGH == _GpiControlStatus) {
     _activeCount = 0;
-    if (HIGH != _inGpioStatusFix) {
+    if (HIGH != _GpiControlStatusFix) {
       setEventQueue(EVENT_ACC_OFF);
-      _inGpioStatusFix = _inGpioStatus;
+      _GpiControlStatusFix = _GpiControlStatus;
     }
   } else {
     if (++_activeCount >= AVERAGE_INPUT_GPIO) {
       _activeCount = AVERAGE_INPUT_GPIO;
-      if (LOW != _inGpioStatusFix) {
+      if (LOW != _GpiControlStatusFix) {
         setEventQueue(EVENT_ACC_ON);
-        _inGpioStatusFix = _inGpioStatus;
+        _GpiControlStatusFix = _GpiControlStatus;
       }
     }
   }
@@ -332,38 +375,60 @@ void doorLockSignalControl() {
  * @author sanlike
  * @date 2021/03/02
  */
-void EventAnalyze(EventID _emEventID) {
+
+void EventControl(EventID _emEventID) {
+  static STATUS_ID _statusIDOld = STATUS_NON;
   switch(_emEventID){
   case EVENT_LOST_BEACON:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_LOST_BEACON\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_LOST_BEACON\n");
+    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+    // アンロック状態の場合はドアロック信号を送る
+    if(STATUS_DOOR_UNLOCK == statusID){
+      subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+      statusID = STATUS_PROVISIONAL_DOOR_UNLOCK;
+    }
     break;
   case EVENT_FOUND_BEACON:
-    SERIAL_PRINTF("EventAnalyze(): EVENT_FOUND_BEACON\n");
-    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+    //SERIAL_PRINTF("EventControl(): EVENT_FOUND_BEACON\n");
+    // 通常ロック状態の場合はドアロック信号を送る
+    if(STATUS_DOOR_LOCK == statusID){
+      subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+      statusID = STATUS_PROVISIONAL_DOOR_LOCK;
+    }
     break;
   case EVENT_LOCK_LED_OFF:
-    SERIAL_PRINTF("EventAnalyze(): EVENT_LOCK_LED_OFF\n");
-    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+    //SERIAL_PRINTF("EventControl(): EVENT_LOCK_LED_OFF\n");
+    statusID = STATUS_DOOR_UNLOCK;
     break;
   case EVENT_LOCK_LED_ON:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_LOCK_LED_ON\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_LOCK_LED_ON\n");
+    statusID = STATUS_DOOR_LOCK;
     break;
   case EVENT_ACC_OFF:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_ACC_OFF\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_ACC_OFF\n");
     break;
   case EVENT_ACC_ON:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_ACC_ON\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_ACC_ON\n");
+    SERIAL_PRINTF("Going to sleep now\n");
+    esp_deep_sleep_start();
     break;
   case EVENT_DOOR_LOCK_SIGNAL:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_DOOR_LOCK_SIGNAL\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_DOOR_LOCK_SIGNAL\n");
     break;
   case EVENT_DOOR_UNLOCK_SIGNAL:
-    //SERIAL_PRINTF("EventAnalyze(): EVENT_DOOR_UNLOCK_SIGNAL\n");
+    //SERIAL_PRINTF("EventControl(): EVENT_DOOR_UNLOCK_SIGNAL\n");
     break;
   default:
-    SERIAL_PRINTF("EventAnalyze(): EVENT_NON\n");
+    SERIAL_PRINTF("EventControl(): EVENT_NON\n");
     break;
   }
+
+  // edge statusId
+  if( statusID != _statusIDOld ){
+    SERIAL_PRINTF("change statusID %d(%s) -> %d(%s)\n", _statusIDOld, dbgStatusMsg[_statusIDOld], statusID, dbgStatusMsg[statusID]);
+  }
+
+  _statusIDOld = statusID;
 }
 
 /**
@@ -373,8 +438,8 @@ void EventAnalyze(EventID _emEventID) {
  */
 void dispLed() {
 #if 0
-  //SERIAL_PRINTF("dispLed() _iBeaconScanStatus: %d\n",_iBeaconScanStatus);
-  digitalWrite(PORT_OUT_ON_BORAD_LED, (_iBeaconScanStatus == 1 ? HIGH : LOW));
+  //SERIAL_PRINTF("dispLed() doConnectBleDevice: %d\n",doConnectBleDevice);
+  digitalWrite(PORT_OUT_ON_BORAD_LED, (doConnectBleDevice == 1 ? HIGH : LOW));
 #else
   // blink
   static int ledBlink = HIGH;
@@ -389,25 +454,25 @@ void dispLed() {
  * @date 2021/03/02
  */
 void bleScan() {
-  static byte _iBeaconScanStatusOLD = 0;
-  _iBeaconScanStatus = 0;
+  static byte _doConnectBleDeviceOLD = 0;
+  doConnectBleDevice = 0;
   //BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME/*, false*/);
   pBLEScan->start(SCAN_TIME, false);
   //SERIAL_PRINTF("Scan done!\n");
   pBLEScan->clearResults(); // delete results fromBLEScan buffer to release memory
 
-  if (_iBeaconScanStatus) {
+  if (doConnectBleDevice) {
     // Edge:ON
-    if (0 == _iBeaconScanStatusOLD) {
+    if (0 == _doConnectBleDeviceOLD) {
       setEventQueue(EVENT_FOUND_BEACON);
     }
   } else {
     // Edge:OFF
-    if (1 == _iBeaconScanStatusOLD) {
+    if (1 == _doConnectBleDeviceOLD) {
       setEventQueue(EVENT_LOST_BEACON);
     }
   }
-  _iBeaconScanStatusOLD = _iBeaconScanStatus;
+  _doConnectBleDeviceOLD = doConnectBleDevice;
 }
 
 /**
@@ -433,7 +498,7 @@ void task1( void *param )
   while ( 1 ) {
     _emEventID = getEventQueue();
     SERIAL_PRINTF( "task1(): id=%d msg=%s\n", _emEventID, dbgEventMsg[_emEventID] );
-    EventAnalyze(_emEventID);
+    EventControl(_emEventID);
     //vTaskDelay(1000);
   }
 }

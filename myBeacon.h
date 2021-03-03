@@ -1,3 +1,6 @@
+#ifndef _MY_BEACON_H_
+#define _MY_BEACON_H_
+
 class myBeaconAdvertisedDevice
 {
   private:
@@ -13,3 +16,5 @@ class myBeaconAdvertisedDevice
     uint16_t  getMinor() { return minor; }
     int       getRSSI() { return rssi; }
 };
+
+#endif  // _MY_BEACON_H_
