@@ -10,18 +10,24 @@
 
 #define _DEBUG_PRINT
 
-#define SCAN_TIME                 (int)5  /* In seconds */
-#define PORT_OUT_ON_BORAD_LED     2
-#define PORT_IN_LOCK_LED          18
-#define PORT_IN_ACC               33
-#define PORT_OUT_DOOR_LOCK_SIGNAL 23
-#define TICKER_LOOP_CYCLE         200
-// LOCK LED入力：4回平均
-#define AVERAGE_INPUT_GPIO        3
-// Queue item size
-#define QUEUE_LENGTH              8
+/* BLS settings */
+#define SCAN_TIME                   (uint32_t)5  /* In seconds */
 
-// debug Event Message
+/* GPIO settings */
+#define PORT_OUT_ON_BORAD_LED       2
+#define PORT_IN_LOCK_LED            18
+#define PORT_IN_ACC                 33
+#define PORT_OUT_DOOR_LOCK_SIGNAL   23
+
+#define PORT_IN_AVERAGE_NUM         (uint8_t)3  /* GPI平均回数:LOCK LED, ACC */
+
+/* timer settings */
+#define TICKER_LOOP_CYCLE           (uint32_t )200
+
+/* event aueue settings */
+#define QUEUE_LENGTH                8       /* event queue length */
+
+/* debug Event Message */
 char *dbgEventMsg[] = {
   "EVENT_NON",
   "EVENT_LOST_BEACON",
@@ -35,9 +41,9 @@ char *dbgEventMsg[] = {
   "EVENT_MAX"
 };
 
-// Event ID
+/* event id */
 enum EventID {
-  EVENT_NON = (int32_t)0,
+  EVENT_NON = (uint8_t)0,
   EVENT_LOST_BEACON,
   EVENT_FOUND_BEACON,
   EVENT_LOCK_LED_OFF,
@@ -49,10 +55,11 @@ enum EventID {
   EVENT_MAX
 };
 
+/* sub event id */
 #define SUB_EVENT_NON                     0x00
 #define SUB_EVENT_SET_DOOR_LOCK_SIGNAL    0x01
 
-// debug Status Message
+/* debug Status Message */
 char *dbgStatusMsg[] = {
   "STATUS_NON",
   "STATUS_DOOR_UNLOCK",
@@ -62,7 +69,7 @@ char *dbgStatusMsg[] = {
   "STATUS_MAX",
 };
 
-// Event ID
+/* status id */
 enum STATUS_ID {
   STATUS_NON = (uint8_t)0,
   STATUS_DOOR_UNLOCK,
@@ -97,7 +104,7 @@ void task1( void *param );
 void task2( void *param );
 
 bool setEventQueue( EventID _emEventID );
-EventID getEventQueue();
+bool getEventQueue( EventID* _emEventID );
 
 void interruptTimer();
 
@@ -195,7 +202,7 @@ void setup() {
   ticker.attach_ms(TICKER_LOOP_CYCLE, interruptTimer);
 
   /* create event-group */
-  hQueue = xQueueCreate( QUEUE_LENGTH, sizeof(int32_t));
+  hQueue = xQueueCreate( QUEUE_LENGTH, sizeof(uint8_t));
 
   /* create task */
   xTaskCreatePinnedToCore( task1,   /* タスクの入口となる関数名 */
@@ -249,8 +256,7 @@ void print_wakeup_reason() {
  */
 bool setEventQueue( EventID _emEventID ) {
   bool bRes = true;
-  int32_t _tempEventID = (int32_t)_emEventID;
-  BaseType_t xStatus = xQueueSend( hQueue, &_tempEventID, 0 );
+  BaseType_t xStatus = xQueueSend( hQueue, &_emEventID, 0 );
   if ( xStatus != pdPASS ) {
     SERIAL_PRINTF("xQueueSend() fail. %d\n", xStatus);
     bRes = false;
@@ -263,14 +269,14 @@ bool setEventQueue( EventID _emEventID ) {
  * @author sanlike
  * @date 2021/03/02
  */
-EventID getEventQueue() {
-  int32_t ReceiveValue = 0;
-  BaseType_t xStatus = xQueueReceive( hQueue, &ReceiveValue, portMAX_DELAY );
+bool getEventQueue( EventID* _emEventID ) {
+  bool bRes = true;
+  BaseType_t xStatus = xQueueReceive( hQueue, _emEventID, portMAX_DELAY );
   if ( xStatus != pdPASS ) {
     SERIAL_PRINTF("xQueueReceive() fail. %d\n", xStatus);
-    ReceiveValue = (int32_t)EVENT_NON;
+    bRes = false;
   }
-  return (EventID)ReceiveValue;
+  return bRes;
 }
 
 /**
@@ -279,8 +285,9 @@ EventID getEventQueue() {
  * @date 2021/03/02
  */
 void GpiControl() {
-  // IN:GPIO
+  /* 入力：車両側)Lock Button LED状態 */
   checkLockLed();
+  /* 入力：車両側)ACC状態 */
   checkAcc();
 }
 
@@ -290,17 +297,20 @@ void GpiControl() {
  * @date 2021/03/02
  */
 void interruptTimer() {
-
+  /* GPI制御処理 */
   GpiControl();
 
   if ( ++tm400msCount >= (uint32_t)(400 / TICKER_LOOP_CYCLE) ) {
-    tm400msCount = 0; tm400msEvent = 1;
+    tm400msCount = 0;
+    tm400msEvent = 1;
   }
   if ( ++tm1000msCount >= (uint32_t)(1000 / TICKER_LOOP_CYCLE) ) {
-    tm1000msCount = 0; tm1000msEvent = 1;
+    tm1000msCount = 0;
+    tm1000msEvent = 1;
   }
   if ( ++tm10000msCount >= (uint32_t)(10000 / TICKER_LOOP_CYCLE) ) {
-    tm10000msCount = 0; tm10000msEvent = 1;
+    tm10000msCount = 0;
+    tm10000msEvent = 1;
   }
 }
 
@@ -310,8 +320,8 @@ void interruptTimer() {
  * @date 2021/03/02
  */
 void checkLockLed() {
-  static byte _activeCount = 0;
-  static byte _GpiControlStatusFix = 0xFF;
+  static uint8_t _activeCount = 0;
+  static uint8_t _GpiControlStatusFix = 0xFF;
   byte _GpiControlStatus = digitalRead(PORT_IN_LOCK_LED);
   if (HIGH == _GpiControlStatus) {
     _activeCount = 0;
@@ -320,8 +330,8 @@ void checkLockLed() {
       _GpiControlStatusFix = _GpiControlStatus;
     }
   } else {
-    if (++_activeCount >= AVERAGE_INPUT_GPIO) {
-      _activeCount = AVERAGE_INPUT_GPIO;
+    if (++_activeCount >= PORT_IN_AVERAGE_NUM) {
+      _activeCount = PORT_IN_AVERAGE_NUM;
       if (LOW != _GpiControlStatusFix) {
         setEventQueue(EVENT_LOCK_LED_ON);
         _GpiControlStatusFix = _GpiControlStatus;
@@ -336,8 +346,8 @@ void checkLockLed() {
  * @date 2021/03/02
  */
 void checkAcc() {
-  static byte _activeCount = 0;
-  static byte _GpiControlStatusFix = 0xFF;
+  static uint8_t _activeCount = 0;
+  static uint8_t _GpiControlStatusFix = 0xFF;
   byte _GpiControlStatus = digitalRead(PORT_IN_ACC);
   if (HIGH == _GpiControlStatus) {
     _activeCount = 0;
@@ -346,8 +356,8 @@ void checkAcc() {
       _GpiControlStatusFix = _GpiControlStatus;
     }
   } else {
-    if (++_activeCount >= AVERAGE_INPUT_GPIO) {
-      _activeCount = AVERAGE_INPUT_GPIO;
+    if (++_activeCount >= PORT_IN_AVERAGE_NUM) {
+      _activeCount = PORT_IN_AVERAGE_NUM;
       if (LOW != _GpiControlStatusFix) {
         setEventQueue(EVENT_ACC_ON);
         _GpiControlStatusFix = _GpiControlStatus;
@@ -437,7 +447,7 @@ void EventControl(EventID _emEventID) {
  * @date 2021/03/02
  */
 void dispLed() {
-#if 0
+#if 1
   //SERIAL_PRINTF("dispLed() doConnectBleDevice: %d\n",doConnectBleDevice);
   digitalWrite(PORT_OUT_ON_BORAD_LED, (doConnectBleDevice == 1 ? HIGH : LOW));
 #else
@@ -496,7 +506,7 @@ void task1( void *param )
   SERIAL_PRINTF( "task1() : start\n" );
   EventID _emEventID;
   while ( 1 ) {
-    _emEventID = getEventQueue();
+    getEventQueue(&_emEventID);
     SERIAL_PRINTF( "task1(): id=%d msg=%s\n", _emEventID, dbgEventMsg[_emEventID] );
     EventControl(_emEventID);
     //vTaskDelay(1000);
