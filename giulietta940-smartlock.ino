@@ -11,21 +11,26 @@
 #define _DEBUG_PRINT
 
 /* BLS settings */
-#define SCAN_TIME                   (uint32_t)5  /* In seconds */
+#define SCAN_TIME                     (uint32_t)5  /* In seconds */
 
 /* GPIO settings */
-#define PORT_OUT_ON_BORAD_LED       2
-#define PORT_IN_LOCK_LED            18
-#define PORT_IN_ACC                 33
-#define PORT_OUT_DOOR_LOCK_SIGNAL   23
+#define PORT_OUT_ON_BORAD_LED         2
+#define PORT_IN_LOCK_LED              18
+#define PORT_IN_ACC                   33
+#define PORT_OUT_DOOR_LOCK_SIGNAL     23
 
-#define PORT_IN_AVERAGE_NUM         (uint8_t)3  /* GPI平均回数:LOCK LED, ACC */
+#define PORT_IN_AVERAGE_NUM           (uint8_t)3  /* GPI平均回数:LOCK LED, ACC */
+
+#define DOOR_LOOK_ACTIVE_COUNT        (uint8_t)2  /* active time n×400ms */
 
 /* timer settings */
-#define TICKER_LOOP_CYCLE           (uint32_t )200
+#define TICKER_MAIN_LOOP_INTERVAL     (uint32_t)200
+#define TICKER_CHECK_DOOR_LAMP        (float)115.0
+
+#define DOOR_LOCK_FUNC_INVALID_TIMER  (float)3.0  /* 起動直後のドアロック機能無効タイマ */
 
 /* event aueue settings */
-#define QUEUE_LENGTH                8       /* event queue length */
+#define QUEUE_LENGTH                  8       /* event queue length */
 
 /* debug Event Message */
 char *dbgEventMsg[] = {
@@ -64,8 +69,6 @@ char *dbgStatusMsg[] = {
   "STATUS_NON",
   "STATUS_DOOR_UNLOCK",
   "STATUS_DOOR_LOCK",
-  "STATUS_PROVISIONAL_DOOR_UNLOCK",
-  "STATUS_PROVISIONAL_DOOR_LOCK",
   "STATUS_MAX",
 };
 
@@ -74,8 +77,6 @@ enum STATUS_ID {
   STATUS_NON = (uint8_t)0,
   STATUS_DOOR_UNLOCK,
   STATUS_DOOR_LOCK,
-  STATUS_PROVISIONAL_DOOR_UNLOCK,
-  STATUS_PROVISIONAL_DOOR_LOCK,
   STATUS_MAX
 };
 
@@ -99,6 +100,10 @@ void checkAcc();
 void doorLockSignalControl();
 void GpiControl();
 void print_wakeup_reason();
+void startdoorLockLampOffTimer();
+void stopdoorLockLampOffTimer();
+void startDoorLockFuncInvalidTimer(float _seconds);
+void stopDoorLockFuncInvalidTimer();
 
 void task1( void *param );
 void task2( void *param );
@@ -106,7 +111,9 @@ void task2( void *param );
 bool setEventQueue( EventID _emEventID );
 bool getEventQueue( EventID* _emEventID );
 
-void interruptTimer();
+void tickerMainLoopTimer();
+void tickerDoorLockLampOffTimer();
+void tickerDoorLockFuncInvalidTimer();
 
 //*****************************************************************************
 // variables
@@ -125,12 +132,18 @@ volatile uint8_t subEventID = SUB_EVENT_NON;
 // Status
 volatile STATUS_ID statusID = STATUS_NON;
 
+// Flgs
+volatile bool doorLockFuncInvalid = false;
+volatile bool doorLockLampOffTimerTMO = false;
+
 // BLE
 BLEScan *pBLEScan;
 volatile uint8_t doConnectBleDevice = 0;
 
 // Ticker
-Ticker ticker;
+Ticker tickerMainLoop;
+Ticker doorLockLampOffTimer;
+Ticker doorLockFuncInvalidTimer;
 
 // Queue
 volatile QueueHandle_t  hQueue;
@@ -152,14 +165,16 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
         if (_mybcn.IsAdvertisedDevice("cb3b0426-10ec-45bd-b58e-f2858c0dbc2b")) {
           doConnectBleDevice = 1;
           BLEDevice::getScan()->stop();
-#if 0
+#if 1
           char uuid[37];
           _mybcn.getUUID().toCharArray(uuid, 37);
           SERIAL_PRINTF("UUID: %s, Major: %d, Minor: %d, RSSI: %d \n", uuid, _mybcn.getMajor(), _mybcn.getMinor(), _mybcn.getRSSI());
 #endif
         } else {
-          //Serial.println("Found another ibeacon!");
+          //SERIAL_PRINTF("Found another ibeacon!\n");
         }
+      } else {
+        //SERIAL_PRINTF("...\n");
       }
     }
 };
@@ -173,6 +188,9 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
  * @date 2021/03/02
  */
 void setup() {
+
+  /* 起動直後のドアロック機能無効タイマ */
+  startDoorLockFuncInvalidTimer(DOOR_LOCK_FUNC_INVALID_TIMER);
 
   /* create gpio */
   pinMode(PORT_OUT_ON_BORAD_LED, OUTPUT);
@@ -199,7 +217,7 @@ void setup() {
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_33,1); //1 = High, 0 = Low
   
   /* create ticker */
-  ticker.attach_ms(TICKER_LOOP_CYCLE, interruptTimer);
+  tickerMainLoop.attach_ms(TICKER_MAIN_LOOP_INTERVAL, tickerMainLoopTimer);
 
   /* create event-group */
   hQueue = xQueueCreate( QUEUE_LENGTH, sizeof(uint8_t));
@@ -292,23 +310,88 @@ void GpiControl() {
 }
 
 /**
+ * @brief ドアロック機能無効タイマの開始
+ * @author sanlike
+ * @date 2021/03/08
+ */
+void startDoorLockFuncInvalidTimer(float _seconds){
+  // タイマが起動していたら停止する
+  stopDoorLockFuncInvalidTimer();
+  // ドアロック機能禁止:禁止[true]
+  doorLockFuncInvalid = true;
+  // タイマ開始
+  doorLockFuncInvalidTimer.once(_seconds, tickerDoorLockFuncInvalidTimer);
+}
+
+/**
+ * @brief ドアロック機能無効タイマの停止
+ * @author sanlike
+ * @date 2021/03/08
+ */
+void stopDoorLockFuncInvalidTimer(){
+  doorLockFuncInvalidTimer.detach();
+}
+
+/**
+ * @brief ドアロック機能無効タイマー
+ * @author sanlike
+ * @date 2021/03/08
+ */
+void tickerDoorLockFuncInvalidTimer(){
+  // ドアロック機能禁止:解除[false]
+  doorLockFuncInvalid = false;
+}
+
+/**
+ * @brief ドアロックランプオフ監視タイマの開始
+ * @author sanlike
+ * @date 2021/03/08
+ */
+void startdoorLockLampOffTimer(){
+  // タイマが起動していたら停止する
+  stopdoorLockLampOffTimer();
+  // ドアロックランプのオフタイマタイムアウト:無[false]
+  doorLockLampOffTimerTMO = false;
+  // タイマ開始
+  doorLockLampOffTimer.once(TICKER_CHECK_DOOR_LAMP, tickerDoorLockLampOffTimer);
+}
+
+/**
+ * @brief ドアロックランプオフ監視タイマの停止
+ * @author sanlike
+ * @date 2021/03/08
+ */
+void stopdoorLockLampOffTimer(){
+  doorLockLampOffTimer.detach();
+}
+
+/**
+ * @brief ドアロックランプオフ監視タイマ(ドアロックランプの2分後消灯機能を監視するタイマ。ドアロックランプはロック状態でも消灯するため、ステータス不一致を抑制する目的で使用)
+ * @author sanlike
+ * @date 2021/03/06
+ */
+void tickerDoorLockLampOffTimer(){
+  doorLockLampOffTimerTMO = true;
+}
+
+/**
  * @brief 割り込みタイマ(200ms)
  * @author sanlike
  * @date 2021/03/02
  */
-void interruptTimer() {
+void tickerMainLoopTimer() {
   /* GPI制御処理 */
   GpiControl();
 
-  if ( ++tm400msCount >= (uint32_t)(400 / TICKER_LOOP_CYCLE) ) {
+  if ( ++tm400msCount >= (uint32_t)(400 / TICKER_MAIN_LOOP_INTERVAL) ) {
     tm400msCount = 0;
     tm400msEvent = 1;
   }
-  if ( ++tm1000msCount >= (uint32_t)(1000 / TICKER_LOOP_CYCLE) ) {
+  if ( ++tm1000msCount >= (uint32_t)(1000 / TICKER_MAIN_LOOP_INTERVAL) ) {
     tm1000msCount = 0;
     tm1000msEvent = 1;
   }
-  if ( ++tm10000msCount >= (uint32_t)(10000 / TICKER_LOOP_CYCLE) ) {
+  if ( ++tm10000msCount >= (uint32_t)(10000 / TICKER_MAIN_LOOP_INTERVAL) ) {
     tm10000msCount = 0;
     tm10000msEvent = 1;
   }
@@ -324,12 +407,14 @@ void checkLockLed() {
   static uint8_t _GpiControlStatusFix = 0xFF;
   byte _GpiControlStatus = digitalRead(PORT_IN_LOCK_LED);
   if (HIGH == _GpiControlStatus) {
+    //digitalWrite(PORT_OUT_ON_BORAD_LED, LOWk);
     _activeCount = 0;
     if (HIGH != _GpiControlStatusFix) {
       setEventQueue(EVENT_LOCK_LED_OFF);
       _GpiControlStatusFix = _GpiControlStatus;
     }
   } else {
+    //digitalWrite(PORT_OUT_ON_BORAD_LED, HIGH);
     if (++_activeCount >= PORT_IN_AVERAGE_NUM) {
       _activeCount = PORT_IN_AVERAGE_NUM;
       if (LOW != _GpiControlStatusFix) {
@@ -372,11 +457,20 @@ void checkAcc() {
  * @date 2021/03/02
  */
 void doorLockSignalControl() {
-  if (subEventID & SUB_EVENT_SET_DOOR_LOCK_SIGNAL) {
-    subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
+  static uint8_t _activeCounter = 0;
+  if(false==doorLockFuncInvalid){
+    if (subEventID & SUB_EVENT_SET_DOOR_LOCK_SIGNAL) {
+      if ( ++_activeCounter >= DOOR_LOOK_ACTIVE_COUNT ) {
+        subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+      }
+      digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
+    } else {
+      _activeCounter = 0;
+      digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
+    }
   } else {
-    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
+    _activeCounter = 0;
+    subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
   }
 }
 
@@ -385,48 +479,55 @@ void doorLockSignalControl() {
  * @author sanlike
  * @date 2021/03/02
  */
-
 void EventControl(EventID _emEventID) {
   static STATUS_ID _statusIDOld = STATUS_NON;
   switch(_emEventID){
   case EVENT_LOST_BEACON:
-    //SERIAL_PRINTF("EventControl(): EVENT_LOST_BEACON\n");
-    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+#if 0
     // アンロック状態の場合はドアロック信号を送る
-    if(STATUS_DOOR_UNLOCK == statusID){
+    if( STATUS_DOOR_UNLOCK == statusID ){
       subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-      statusID = STATUS_PROVISIONAL_DOOR_LOCK;
     }
+#else
+    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+#endif
     break;
   case EVENT_FOUND_BEACON:
-    //SERIAL_PRINTF("EventControl(): EVENT_FOUND_BEACON\n");
+#if 0
     // 通常ロック状態の場合はドアロック信号を送る
-    if(STATUS_DOOR_LOCK == statusID){
+    if( STATUS_DOOR_LOCK == statusID ){
       subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-      statusID = STATUS_PROVISIONAL_DOOR_UNLOCK;
     }
+#else
+    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+#endif
     break;
   case EVENT_LOCK_LED_OFF:
-    //SERIAL_PRINTF("EventControl(): EVENT_LOCK_LED_OFF\n");
+#if 1   // test:doorLockLampOffTimer
+    // door lampのON時間がタイムアウトした場合、door lock状態を継続する
+    stopdoorLockLampOffTimer();
+    if( true != doorLockLampOffTimerTMO ){
+      statusID = STATUS_DOOR_UNLOCK;
+    }
+#else
     statusID = STATUS_DOOR_UNLOCK;
+#endif  // test:doorLockLampOffTimer
     break;
   case EVENT_LOCK_LED_ON:
-    //SERIAL_PRINTF("EventControl(): EVENT_LOCK_LED_ON\n");
     statusID = STATUS_DOOR_LOCK;
+#if 1   // test:doorLockLampOffTimer
+    startdoorLockLampOffTimer();
+#endif  // test:doorLockLampOffTimer
     break;
   case EVENT_ACC_OFF:
-    //SERIAL_PRINTF("EventControl(): EVENT_ACC_OFF\n");
     break;
   case EVENT_ACC_ON:
-    //SERIAL_PRINTF("EventControl(): EVENT_ACC_ON\n");
     SERIAL_PRINTF("Going to sleep now\n");
     esp_deep_sleep_start();
     break;
   case EVENT_DOOR_LOCK_SIGNAL:
-    //SERIAL_PRINTF("EventControl(): EVENT_DOOR_LOCK_SIGNAL\n");
     break;
   case EVENT_DOOR_UNLOCK_SIGNAL:
-    //SERIAL_PRINTF("EventControl(): EVENT_DOOR_UNLOCK_SIGNAL\n");
     break;
   default:
     SERIAL_PRINTF("EventControl(): EVENT_NON\n");
@@ -467,6 +568,7 @@ void bleScan() {
   static byte _doConnectBleDeviceOLD = 0;
   doConnectBleDevice = 0;
   //BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME/*, false*/);
+  //SERIAL_PRINTF("Scan start!\n");
   pBLEScan->start(SCAN_TIME, false);
   //SERIAL_PRINTF("Scan done!\n");
   pBLEScan->clearResults(); // delete results fromBLEScan buffer to release memory
