@@ -32,6 +32,12 @@
 /* event aueue settings */
 #define QUEUE_LENGTH                  8       /* event queue length */
 
+/* touch sensor 移動平均(n) */
+#define AVEREGE_TOUCH_SENSOR_NUM      (uint8_t)5
+/* touch sensor ヒステリシスループ閾値 */
+#define TOUCH_SENSOR_THRESHOLD_ACTIVE   (uint16_t)30
+#define TOUCH_SENSOR_THRESHOLD_DEACTIVE (uint16_t)50
+
 /* debug Event Message */
 char *dbgEventMsg[] = {
   "EVENT_NON",
@@ -43,6 +49,8 @@ char *dbgEventMsg[] = {
   "EVENT_ACC_ON",
   "EVENT_DOOR_LOCK_SIGNAL",
   "EVENT_DOOR_UNLOCK_SIGNAL",
+  "EVENT_ACTIVE_TOUCH_SENSOR",
+  "EVENT_DOOR_LOCK_LAMP_TIMEOUT",
   "EVENT_MAX"
 };
 
@@ -57,6 +65,8 @@ enum EventID {
   EVENT_ACC_ON,
   EVENT_DOOR_LOCK_SIGNAL,
   EVENT_DOOR_UNLOCK_SIGNAL,
+  EVENT_ACTIVE_TOUCH_SENSOR,
+  EVENT_DOOR_LOCK_LAMP_TIMEOUT,
   EVENT_MAX
 };
 
@@ -64,22 +74,41 @@ enum EventID {
 #define SUB_EVENT_NON                     0x00
 #define SUB_EVENT_SET_DOOR_LOCK_SIGNAL    0x01
 
-/* debug Status Message */
-char *dbgStatusMsg[] = {
-  "STATUS_NON",
-  "STATUS_DOOR_UNLOCK",
-  "STATUS_DOOR_LOCK",
-  "STATUS_MAX",
+/* debug beacon status message */
+char *dbgBeaconStatusMsg[] = {
+  "BEACON_STATUS_NON",
+  "BEACON_STATUS_LOST",
+  "BEACON_STATUS_FOUND",
+  "BEACON_STATUS_MAX",
 };
 
-/* status id */
-enum STATUS_ID {
-  STATUS_NON = (uint8_t)0,
-  STATUS_DOOR_UNLOCK,
-  STATUS_DOOR_LOCK,
-  STATUS_MAX
+/* beacon status id */
+enum BEACON_STATUS_ID {
+  BEACON_STATUS_NON = (uint8_t)0,
+  BEACON_STATUS_LOST,
+  BEACON_STATUS_FOUND,
+  BEACON_STATUS_MAX
 };
 
+/* debug door status message */
+char *dbgDoorStatusMsg[] = {
+  "DOOR_STATUS_NON",
+  "DOOR_STATUS_UNLOCK_WAIT",
+  "DOOR_STATUS_UNLOCK",
+  "DOOR_STATUS_LOCK_WAIT",
+  "DOOR_STATUS_LOCK",
+  "DOOR_STATUS_MAX",
+};
+
+/* door status id */
+enum DOOR_STATUS_ID {
+  DOOR_STATUS_NON = (uint8_t)0,
+  DOOR_STATUS_UNLOCK_WAIT,
+  DOOR_STATUS_UNLOCK,
+  DOOR_STATUS_LOCK_WAIT,
+  DOOR_STATUS_LOCK,
+  DOOR_STATUS_MAX
+};
 //*****************************************************************************
 // macro function
 //*****************************************************************************
@@ -95,15 +124,14 @@ enum STATUS_ID {
 void bleScan();
 void dispLed();
 void EventControl(EventID _emEventID);
-void checkLockLed();
-void checkAcc();
+void getDoorLockLed();
+void getAccStatus();
+void getToucSensor();
 void doorLockSignalControl();
 void GpiControl();
 void print_wakeup_reason();
 void startdoorLockLampOffTimer();
 void stopdoorLockLampOffTimer();
-void startDoorLockFuncInvalidTimer(float _seconds);
-void stopDoorLockFuncInvalidTimer();
 
 void task1( void *param );
 void task2( void *param );
@@ -113,7 +141,6 @@ bool getEventQueue( EventID* _emEventID );
 
 void tickerMainLoopTimer();
 void tickerDoorLockLampOffTimer();
-void tickerDoorLockFuncInvalidTimer();
 
 //*****************************************************************************
 // variables
@@ -130,11 +157,8 @@ volatile uint8_t  tm10000msEvent = 0;
 volatile uint8_t subEventID = SUB_EVENT_NON;
 
 // Status
-volatile STATUS_ID statusID = STATUS_NON;
-
-// Flgs
-volatile bool doorLockFuncInvalid = false;
-volatile bool doorLockLampOffTimerTMO = false;
+volatile BEACON_STATUS_ID beaconStatusID = BEACON_STATUS_NON;
+volatile DOOR_STATUS_ID doorStatusID = DOOR_STATUS_NON;
 
 // BLE
 BLEScan *pBLEScan;
@@ -143,7 +167,6 @@ volatile uint8_t doConnectBleDevice = 0;
 // Ticker
 Ticker tickerMainLoop;
 Ticker doorLockLampOffTimer;
-Ticker doorLockFuncInvalidTimer;
 
 // Queue
 volatile QueueHandle_t  hQueue;
@@ -188,9 +211,6 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
  * @date 2021/03/02
  */
 void setup() {
-
-  /* 起動直後のドアロック機能無効タイマ */
-  startDoorLockFuncInvalidTimer(DOOR_LOCK_FUNC_INVALID_TIMER);
 
   /* create gpio */
   pinMode(PORT_OUT_ON_BORAD_LED, OUTPUT);
@@ -304,42 +324,13 @@ bool getEventQueue( EventID* _emEventID ) {
  */
 void GpiControl() {
   /* 入力：車両側)Lock Button LED状態 */
-  checkLockLed();
+  getDoorLockLed();
   /* 入力：車両側)ACC状態 */
-  checkAcc();
-}
-
-/**
- * @brief ドアロック機能無効タイマの開始
- * @author sanlike
- * @date 2021/03/08
- */
-void startDoorLockFuncInvalidTimer(float _seconds){
-  // タイマが起動していたら停止する
-  stopDoorLockFuncInvalidTimer();
-  // ドアロック機能禁止:禁止[true]
-  doorLockFuncInvalid = true;
-  // タイマ開始
-  doorLockFuncInvalidTimer.once(_seconds, tickerDoorLockFuncInvalidTimer);
-}
-
-/**
- * @brief ドアロック機能無効タイマの停止
- * @author sanlike
- * @date 2021/03/08
- */
-void stopDoorLockFuncInvalidTimer(){
-  doorLockFuncInvalidTimer.detach();
-}
-
-/**
- * @brief ドアロック機能無効タイマー
- * @author sanlike
- * @date 2021/03/08
- */
-void tickerDoorLockFuncInvalidTimer(){
-  // ドアロック機能禁止:解除[false]
-  doorLockFuncInvalid = false;
+  getAccStatus();
+#if 1 // touchセンサ入力テスト
+  /* 入力：touchセンサ */
+  getToucSensor();
+#endif // touchセンサ入力テスト  
 }
 
 /**
@@ -350,8 +341,6 @@ void tickerDoorLockFuncInvalidTimer(){
 void startdoorLockLampOffTimer(){
   // タイマが起動していたら停止する
   stopdoorLockLampOffTimer();
-  // ドアロックランプのオフタイマタイムアウト:無[false]
-  doorLockLampOffTimerTMO = false;
   // タイマ開始
   doorLockLampOffTimer.once(TICKER_CHECK_DOOR_LAMP, tickerDoorLockLampOffTimer);
 }
@@ -366,12 +355,12 @@ void stopdoorLockLampOffTimer(){
 }
 
 /**
- * @brief ドアロックランプオフ監視タイマ(ドアロックランプの2分後消灯機能を監視するタイマ。ドアロックランプはロック状態でも消灯するため、ステータス不一致を抑制する目的で使用)
+ * @brief ドアロックランプオフ監視タイマ(ドアロックランプの2分後消灯機能を監視)
  * @author sanlike
  * @date 2021/03/06
  */
 void tickerDoorLockLampOffTimer(){
-  doorLockLampOffTimerTMO = true;
+  setEventQueue(EVENT_DOOR_LOCK_LAMP_TIMEOUT);
 }
 
 /**
@@ -398,11 +387,56 @@ void tickerMainLoopTimer() {
 }
 
 /**
+ * @brief タッチセンサ入力処理
+ * @author sanlike
+ * @date 2021/03/12
+ */
+void getToucSensor(){
+  uint16_t _value = touchRead(T6);
+  uint16_t _averageTouchSensor = 0; 
+
+  static uint8_t _index = 0;
+  static uint16_t _touchSensor[AVEREGE_TOUCH_SENSOR_NUM];
+  static uint32_t _touchSensorSum = 0;
+
+  uint8_t _threshold = LOW;
+  static uint8_t _thresholdOld = LOW;
+
+  // 移動平均
+  if (_index == AVEREGE_TOUCH_SENSOR_NUM) _index = 0;
+  _touchSensorSum -= _touchSensor[_index];
+  _touchSensor[_index] = _value;
+  _touchSensorSum += _touchSensor[_index];
+  _index++;
+  _averageTouchSensor = _touchSensorSum / AVEREGE_TOUCH_SENSOR_NUM;
+
+  // active
+  if( _averageTouchSensor <= TOUCH_SENSOR_THRESHOLD_ACTIVE ){
+    _threshold = HIGH;
+  // deactive
+  } else if( _averageTouchSensor >= TOUCH_SENSOR_THRESHOLD_DEACTIVE ){
+    _threshold = LOW;
+  }
+
+  // edge:low->high
+  if( HIGH == _threshold && LOW == _thresholdOld ){
+    setEventQueue(EVENT_ACTIVE_TOUCH_SENSOR);
+  }
+  _thresholdOld = _threshold;
+
+#ifdef _DEBUG_PRINT // _DEBUG_PRINT
+  if(_value != _averageTouchSensor || _threshold != _thresholdOld ){
+    SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
+  }
+#endif              // _DEBUG_PRINT
+}
+
+/**
  * @brief ドアロックLED入力処理
  * @author sanlike
  * @date 2021/03/02
  */
-void checkLockLed() {
+void getDoorLockLed() {
   static uint8_t _activeCount = 0;
   static uint8_t _GpiControlStatusFix = 0xFF;
   byte _GpiControlStatus = digitalRead(PORT_IN_LOCK_LED);
@@ -430,7 +464,7 @@ void checkLockLed() {
  * @author sanlike
  * @date 2021/03/02
  */
-void checkAcc() {
+void getAccStatus() {
   static uint8_t _activeCount = 0;
   static uint8_t _GpiControlStatusFix = 0xFF;
   byte _GpiControlStatus = digitalRead(PORT_IN_ACC);
@@ -458,19 +492,14 @@ void checkAcc() {
  */
 void doorLockSignalControl() {
   static uint8_t _activeCounter = 0;
-  if(false==doorLockFuncInvalid){
-    if (subEventID & SUB_EVENT_SET_DOOR_LOCK_SIGNAL) {
-      if ( ++_activeCounter >= DOOR_LOOK_ACTIVE_COUNT ) {
-        subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-      }
-      digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
-    } else {
-      _activeCounter = 0;
-      digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
+  if (subEventID & SUB_EVENT_SET_DOOR_LOCK_SIGNAL) {
+    if ( ++_activeCounter >= DOOR_LOOK_ACTIVE_COUNT ) {
+      subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
     }
+    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
   } else {
     _activeCounter = 0;
-    subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
   }
 }
 
@@ -480,44 +509,26 @@ void doorLockSignalControl() {
  * @date 2021/03/02
  */
 void EventControl(EventID _emEventID) {
-  static STATUS_ID _statusIDOld = STATUS_NON;
+  static BEACON_STATUS_ID _beaconStatusIdOld = BEACON_STATUS_NON;
+  static DOOR_STATUS_ID _doorStatusIdOld = DOOR_STATUS_NON;
   switch(_emEventID){
   case EVENT_LOST_BEACON:
-#if 0
-    // アンロック状態の場合はドアロック信号を送る
-    if( STATUS_DOOR_UNLOCK == statusID ){
-      subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-    }
-#else
-    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-#endif
+    beaconStatusID = BEACON_STATUS_LOST;
     break;
   case EVENT_FOUND_BEACON:
-#if 0
-    // 通常ロック状態の場合はドアロック信号を送る
-    if( STATUS_DOOR_LOCK == statusID ){
-      subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-    }
-#else
-    subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-#endif
+    beaconStatusID = BEACON_STATUS_FOUND;
     break;
   case EVENT_LOCK_LED_OFF:
-#if 1   // test:doorLockLampOffTimer
-    // door lampのON時間がタイムアウトした場合、door lock状態を継続する
-    stopdoorLockLampOffTimer();
-    if( true != doorLockLampOffTimerTMO ){
-      statusID = STATUS_DOOR_UNLOCK;
+    if( DOOR_STATUS_UNLOCK_WAIT == doorStatusID || DOOR_STATUS_NON == doorStatusID ){
+      stopdoorLockLampOffTimer();
+      doorStatusID = DOOR_STATUS_UNLOCK;
     }
-#else
-    statusID = STATUS_DOOR_UNLOCK;
-#endif  // test:doorLockLampOffTimer
     break;
   case EVENT_LOCK_LED_ON:
-    statusID = STATUS_DOOR_LOCK;
-#if 1   // test:doorLockLampOffTimer
-    startdoorLockLampOffTimer();
-#endif  // test:doorLockLampOffTimer
+    if( DOOR_STATUS_LOCK_WAIT == doorStatusID || DOOR_STATUS_NON == doorStatusID ){
+      stopdoorLockLampOffTimer();
+      doorStatusID = DOOR_STATUS_UNLOCK;
+    }
     break;
   case EVENT_ACC_OFF:
     break;
@@ -529,17 +540,48 @@ void EventControl(EventID _emEventID) {
     break;
   case EVENT_DOOR_UNLOCK_SIGNAL:
     break;
+  case EVENT_ACTIVE_TOUCH_SENSOR:
+    if( BEACON_STATUS_FOUND == beaconStatusID ){
+      switch( doorStatusID ) {
+        case DOOR_STATUS_LOCK:
+        case DOOR_STATUS_UNLOCK:
+          startdoorLockLampOffTimer();
+          doorStatusID = ( DOOR_STATUS_UNLOCK == doorStatusID ? DOOR_STATUS_LOCK_WAIT : DOOR_STATUS_UNLOCK_WAIT);
+          SERIAL_PRINTF("sub event : SUB_EVENT_SET_DOOR_LOCK_SIGNAL\n");
+          subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
+          break;
+        default:
+          break;
+      }
+    }
+    break;
+  case EVENT_DOOR_LOCK_LAMP_TIMEOUT:
+    switch( doorStatusID ) {
+      case DOOR_STATUS_LOCK_WAIT:
+        doorStatusID = DOOR_STATUS_UNLOCK;
+        break;
+      case DOOR_STATUS_UNLOCK_WAIT:
+        doorStatusID = DOOR_STATUS_LOCK;
+        break;
+      default:
+        /* 破棄 */
+        break;
+    }
+    break;
   default:
     SERIAL_PRINTF("EventControl(): EVENT_NON\n");
     break;
   }
 
   // edge statusId
-  if( statusID != _statusIDOld ){
-    SERIAL_PRINTF("change statusID %d(%s) -> %d(%s)\n", _statusIDOld, dbgStatusMsg[_statusIDOld], statusID, dbgStatusMsg[statusID]);
+  if( doorStatusID != _doorStatusIdOld ){
+    SERIAL_PRINTF("change doorStatusID %d(%s) -> %d(%s)\n", _doorStatusIdOld, dbgDoorStatusMsg[_doorStatusIdOld], doorStatusID, dbgDoorStatusMsg[doorStatusID]);
   }
-
-  _statusIDOld = statusID;
+  _doorStatusIdOld = doorStatusID;
+  if( beaconStatusID != _beaconStatusIdOld ){
+    SERIAL_PRINTF("change beaconStatusID %d(%s) -> %d(%s)\n", _beaconStatusIdOld, dbgBeaconStatusMsg[_beaconStatusIdOld], beaconStatusID, dbgBeaconStatusMsg[beaconStatusID]);
+  }
+  _beaconStatusIdOld = beaconStatusID;
 }
 
 /**
