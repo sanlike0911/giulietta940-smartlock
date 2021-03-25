@@ -11,29 +11,31 @@
 #define _DEBUG_PRINT
 
 /* BLS settings */
-#define SCAN_TIME                     (uint32_t)5  /* In seconds */
+#define BLE_SCAN_TIME           (uint32_t)5 /* In seconds */
+#define BLE_SLEEP_ENABLE_COUNT  (uint16_t)6  /* time = BLE_SCAN_TIME × BLE_SLEEP_ENABLE_COUNT*/
+#define BLE_ADVERTISED_DEVIECE_UUID   "cb3b0426-10ec-45bd-b58e-f2858c0dbc2b"
 
 /* GPIO settings */
 #define PORT_OUT_ON_BORAD_LED         2
-#define PORT_IN_LOCK_LED              18
-#define PORT_IN_ACC                   33
-#define PORT_OUT_DOOR_LOCK_SIGNAL     23
+#define PORT_OUT_DOOR_LOCK_SIGNAL     17
+#define PORT_IN_TOUCH_SENSOR          T6  /*  T6(GPIO14) */
 
-#define PORT_IN_AVERAGE_NUM           (uint8_t)3  /* GPI平均回数:LOCK LED, ACC */
+/* touch sensor ID */
+#define TOUCH_SENSOR_ID               6   /*  T6(GPIO14) */
 
-#define DOOR_LOOK_ACTIVE_COUNT        (uint8_t)2  /* active time n×400ms */
+/* port[out] setting */
+#define DOOR_LOOK_SIGNAL_ACTIVE_EDGE_COUNT (uint8_t)2  /* active edge time = n × 400ms */
 
 /* timer settings */
-#define TICKER_MAIN_LOOP_INTERVAL     (uint32_t)200
-#define TICKER_CHECK_DOOR_LAMP        (float)115.0
-
-#define DOOR_LOCK_FUNC_INVALID_TIMER  (float)3.0  /* 起動直後のドアロック機能無効タイマ */
+#define TICKER_MAIN_LOOP_INTERVAL         (uint32_t)200
+#define DOOR_LOCK_SIGNAL_ACTIVE_DURATION  (uint32_t)800
 
 /* event aueue settings */
 #define QUEUE_LENGTH                  8       /* event queue length */
 
 /* touch sensor 移動平均(n) */
-#define AVEREGE_TOUCH_SENSOR_NUM      (uint8_t)5
+#define AVEREGE_TOUCH_SENSOR_NUM      (uint8_t)4
+
 /* touch sensor ヒステリシスループ閾値 */
 #define TOUCH_SENSOR_THRESHOLD_ACTIVE   (uint16_t)30
 #define TOUCH_SENSOR_THRESHOLD_DEACTIVE (uint16_t)50
@@ -43,14 +45,8 @@ char *dbgEventMsg[] = {
   "EVENT_NON",
   "EVENT_LOST_BEACON",
   "EVENT_FOUND_BEACON",
-  "EVENT_LOCK_LED_OFF",
-  "EVENT_LOCK_LED_ON",
-  "EVENT_ACC_OFF",
-  "EVENT_ACC_ON",
-  "EVENT_DOOR_LOCK_SIGNAL",
-  "EVENT_DOOR_UNLOCK_SIGNAL",
-  "EVENT_ACTIVE_TOUCH_SENSOR",
-  "EVENT_DOOR_LOCK_LAMP_TIMEOUT",
+  "EVENT_TOUCH_SENSOR_DEACTIVE",
+  "EVENT_TOUCH_SENSOR_ACTIVE",
   "EVENT_MAX"
 };
 
@@ -59,20 +55,10 @@ enum EventID {
   EVENT_NON = (uint8_t)0,
   EVENT_LOST_BEACON,
   EVENT_FOUND_BEACON,
-  EVENT_LOCK_LED_OFF,
-  EVENT_LOCK_LED_ON,
-  EVENT_ACC_OFF,
-  EVENT_ACC_ON,
-  EVENT_DOOR_LOCK_SIGNAL,
-  EVENT_DOOR_UNLOCK_SIGNAL,
-  EVENT_ACTIVE_TOUCH_SENSOR,
-  EVENT_DOOR_LOCK_LAMP_TIMEOUT,
+  EVENT_TOUCH_SENSOR_DEACTIVE,
+  EVENT_TOUCH_SENSOR_ACTIVE,
   EVENT_MAX
 };
-
-/* sub event id */
-#define SUB_EVENT_NON                     0x00
-#define SUB_EVENT_SET_DOOR_LOCK_SIGNAL    0x01
 
 /* debug beacon status message */
 char *dbgBeaconStatusMsg[] = {
@@ -82,7 +68,7 @@ char *dbgBeaconStatusMsg[] = {
   "BEACON_STATUS_MAX",
 };
 
-/* beacon status id */
+// /* beacon status id */
 enum BEACON_STATUS_ID {
   BEACON_STATUS_NON = (uint8_t)0,
   BEACON_STATUS_LOST,
@@ -90,62 +76,74 @@ enum BEACON_STATUS_ID {
   BEACON_STATUS_MAX
 };
 
-/* debug door status message */
-char *dbgDoorStatusMsg[] = {
-  "DOOR_STATUS_NON",
-  "DOOR_STATUS_UNLOCK_WAIT",
-  "DOOR_STATUS_UNLOCK",
-  "DOOR_STATUS_LOCK_WAIT",
-  "DOOR_STATUS_LOCK",
-  "DOOR_STATUS_MAX",
+/* debug touchpad status message */
+char *dbgTouchpadStatusMsg[] = {
+  "TOUCHPAD_STATUS_NON",
+  "TOUCHPAD_STATUS_ACTIVE",
+  "TOUCHPAD_STATUS_DEACTIVE",
+  "TOUCHPAD_STATUS_MAX",
 };
 
-/* door status id */
-enum DOOR_STATUS_ID {
-  DOOR_STATUS_NON = (uint8_t)0,
-  DOOR_STATUS_UNLOCK_WAIT,
-  DOOR_STATUS_UNLOCK,
-  DOOR_STATUS_LOCK_WAIT,
-  DOOR_STATUS_LOCK,
-  DOOR_STATUS_MAX
+// /* touchpad status id */
+enum TOUCHPAD_STATUS_ID {
+  TOUCHPAD_STATUS_NON = (uint8_t)0,
+  TOUCHPAD_STATUS_ACTIVE,
+  TOUCHPAD_STATUS_DEACTIVE,
+  TOUCHPAD_STATUS_MAX
 };
+
 //*****************************************************************************
 // macro function
 //*****************************************************************************
-#ifdef _DEBUG_PRINT
+#ifdef _DEBUG_PRINT // _DEBUG_PRINT
  #define SERIAL_PRINTF(...)  Serial.printf(__VA_ARGS__)
-#else
+#else               // _DEBUG_PRINT
  #define SERIAL_PRINTF(...)
-#endif
+#endif              // _DEBUG_PRINT
 
 //*****************************************************************************
 // prototypes
 //*****************************************************************************
+/* bletooth */
 void bleScan();
+
+/* display */
 void dispLed();
-void EventControl(EventID _emEventID);
-void getDoorLockLed();
-void getAccStatus();
-void getToucSensor();
-void doorLockSignalControl();
+
+/* door lock signal control */
+void startTickerDoorLockSignalControl();
+void stopTickerDoorLockSignalControl();
+
+/* gpio */
 void GpiControl();
-void print_wakeup_reason();
-void startdoorLockLampOffTimer();
-void stopdoorLockLampOffTimer();
 
-void task1( void *param );
-void task2( void *param );
+/* touch sensor */
+void getToucSensor();
+void setupDeepSleepEnableToutchpad();
+void interruptTouchSensor();
 
+/* wikeup */
+esp_sleep_wakeup_cause_t getWakeupReason();
+touch_pad_t getWakeupTouchpadReason();
+
+/* event */
+void eventControl(EventID _emEventID);
 bool setEventQueue( EventID _emEventID );
 bool getEventQueue( EventID* _emEventID );
+void jugeEventDoorLockSignal();
 
-void tickerMainLoopTimer();
-void tickerDoorLockLampOffTimer();
+/* task */
+void taskEventControl( void *param );
+void taskTimeControl( void *param );
+
+/* ticker */
+void tickerFuncMainLoop();
+void tickerFuncDoorLockSignalControl();
 
 //*****************************************************************************
 // variables
 //*****************************************************************************
-// Timer
+/* timer */
 volatile uint32_t tm400msCount = 0;
 volatile uint32_t tm1000msCount = 0;
 volatile uint32_t tm10000msCount = 0;
@@ -153,20 +151,17 @@ volatile uint8_t  tm400msEvent = 0;
 volatile uint8_t  tm1000msEvent = 0;
 volatile uint8_t  tm10000msEvent = 0;
 
-// Sub Event
-volatile uint8_t subEventID = SUB_EVENT_NON;
-
 // Status
-volatile BEACON_STATUS_ID beaconStatusID = BEACON_STATUS_NON;
-volatile DOOR_STATUS_ID doorStatusID = DOOR_STATUS_NON;
+volatile BEACON_STATUS_ID beaconStatusId = BEACON_STATUS_NON;
+volatile TOUCHPAD_STATUS_ID touchpadStatusId = TOUCHPAD_STATUS_NON;
 
 // BLE
 BLEScan *pBLEScan;
-volatile uint8_t doConnectBleDevice = 0;
+volatile bool doConnectBleDevice = false;
 
 // Ticker
 Ticker tickerMainLoop;
-Ticker doorLockLampOffTimer;
+Ticker tickerDoorLockSignalControl;
 
 // Queue
 volatile QueueHandle_t  hQueue;
@@ -180,25 +175,23 @@ volatile QueueHandle_t  hQueue;
  * @date 2021/03/02
  */
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+public:
     void onResult(BLEAdvertisedDevice advertisedDevice) {
+      // SERIAL_PRINTF("Advertised Device: %s \n", advertisedDevice.toString().c_str());
       // アドバタイジングデータを受け取ったとき
       myBeaconAdvertisedDevice _mybcn;
       if (_mybcn.createByAdvertisedDevice(advertisedDevice)) {
-        //Serial.println("Found an iBeacon!");
-        if (_mybcn.IsAdvertisedDevice("cb3b0426-10ec-45bd-b58e-f2858c0dbc2b")) {
-          doConnectBleDevice = 1;
+        // SERIAL_PRINTF("Found an iBeacon!!\n");
+        if (_mybcn.IsAdvertisedDevice(BLE_ADVERTISED_DEVIECE_UUID)) {
+          doConnectBleDevice = true;
           BLEDevice::getScan()->stop();
-#if 1
-          char uuid[37];
-          _mybcn.getUUID().toCharArray(uuid, 37);
-          SERIAL_PRINTF("UUID: %s, Major: %d, Minor: %d, RSSI: %d \n", uuid, _mybcn.getMajor(), _mybcn.getMinor(), _mybcn.getRSSI());
-#endif
-        } else {
-          //SERIAL_PRINTF("Found another ibeacon!\n");
-        }
-      } else {
-        //SERIAL_PRINTF("...\n");
-      }
+#ifdef _DEBUG_PRINT   // _DEBUG_PRINT
+          // char uuid[37];
+          // _mybcn.getUUID().toCharArray(uuid, 37);
+          // SERIAL_PRINTF("Found a device!! UUID: %s, Major: %d, Minor: %d, RSSI: %d \n", uuid, _mybcn.getMajor(), _mybcn.getMinor(), _mybcn.getRSSI());
+#endif                // _DEBUG_PRINT
+        } else {}
+      } else {}
     }
 };
 
@@ -212,6 +205,9 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
  */
 void setup() {
 
+  /* create serial */
+  Serial.begin(115200);
+
   /* create gpio */
   pinMode(PORT_OUT_ON_BORAD_LED, OUTPUT);
   digitalWrite(PORT_OUT_ON_BORAD_LED, HIGH);
@@ -219,45 +215,49 @@ void setup() {
   pinMode(PORT_OUT_DOOR_LOCK_SIGNAL, OUTPUT);
   digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
 
-  pinMode(PORT_IN_LOCK_LED, INPUT);
-  pinMode(PORT_IN_LOCK_LED, INPUT_PULLUP);
+  /* esp32 device infomation */
+  // SERIAL_PRINTF("--------------- esp32 device infomation ---------------\n");
+  // SERIAL_PRINTF("Internal Total heap %d, internal Free Heap %d\n", ESP.getHeapSize(), ESP.getFreeHeap());
+  // SERIAL_PRINTF("SPIRam Total heap %d, SPIRam Free Heap %d\n", ESP.getPsramSize(), ESP.getFreePsram());
+  // SERIAL_PRINTF("Flash Size %d, Flash Speed %d\n", ESP.getFlashChipSize(), ESP.getFlashChipSpeed());
+  // SERIAL_PRINTF("ChipRevision %d, Cpu Freq %d, SDK Version %s\n", ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getSdkVersion());
 
-  pinMode(PORT_IN_ACC, INPUT);
-  pinMode(PORT_IN_ACC, INPUT_PULLUP);
-
-  /* create serial */
-  Serial.begin(115200);
-  SERIAL_PRINTF("Internal Total heap %d, internal Free Heap %d\n", ESP.getHeapSize(), ESP.getFreeHeap());
-  SERIAL_PRINTF("SPIRam Total heap %d, SPIRam Free Heap %d\n", ESP.getPsramSize(), ESP.getFreePsram());
-  SERIAL_PRINTF("Flash Size %d, Flash Speed %d\n", ESP.getFlashChipSize(), ESP.getFlashChipSpeed());
-  SERIAL_PRINTF("ChipRevision %d, Cpu Freq %d, SDK Version %s\n", ESP.getChipRevision(), ESP.getCpuFreqMHz(), ESP.getSdkVersion());
-
-  /* setup sleep ext0 wakeup */
-  print_wakeup_reason();
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_33,1); //1 = High, 0 = Low
+  /* wakeup reason */
+  SERIAL_PRINTF("--------------- esp32 wakeup reason ---------------\n");
+  esp_sleep_wakeup_cause_t _wakeupReason = getWakeupReason();
+  touch_pad_t _wakeupTouchpadReason = getWakeupTouchpadReason();
+#if 1
+  /* first boot? */
+  if( ESP_SLEEP_WAKEUP_UNDEFINED == _wakeupReason || TOUCH_SENSOR_ID != _wakeupTouchpadReason ){
+    setupDeepSleepEnableToutchpad();
+  }
+#endif
   
   /* create ticker */
-  tickerMainLoop.attach_ms(TICKER_MAIN_LOOP_INTERVAL, tickerMainLoopTimer);
+  tickerMainLoop.attach_ms( TICKER_MAIN_LOOP_INTERVAL, tickerFuncMainLoop );
 
   /* create event-group */
   hQueue = xQueueCreate( QUEUE_LENGTH, sizeof(uint8_t));
 
   /* create task */
-  xTaskCreatePinnedToCore( task1,   /* タスクの入口となる関数名 */
-                           "TASK1", /* タスクの名称 */
-                           0x800,   /* スタックサイズ */
-                           NULL,    /* パラメータのポインタ */
-                           1,       /* プライオリティ */
-                           NULL,    /* ハンドル構造体のポインタ */
-                           0 );     /* 割り当てるコア (0/1) */
+  xTaskCreatePinnedToCore( taskEventControl,   /* タスクの入口となる関数名 */
+                           "taskEventControl", /* タスクの名称 */
+                           0x800,           /* スタックサイズ */
+                           NULL,            /* パラメータのポインタ */
+                           1,               /* プライオリティ */
+                           NULL,            /* ハンドル構造体のポインタ */
+                           0 );             /* 割り当てるコア (0/1) */
 
-  xTaskCreatePinnedToCore( task2,
-                           "TASK2",
+  xTaskCreatePinnedToCore( taskTimeControl,
+                           "taskTimeControl",
                            0x800,
                            NULL,
                            1,
                            NULL,
                            1 );
+
+  /* Brownout detector was triggered 対策 */
+  delay(100);
 
   /* create ble */
   BLEDevice::init("");
@@ -267,24 +267,75 @@ void setup() {
 }
 
 /**
+ * @brief setup deep sleep enable toutchpad
+ * @author sanlike
+ * @date 2021/03/24
+ */
+void setupDeepSleepEnableToutchpad(){
+  /* Setup interrupt on Touch Pad 6 (GPIO14) */
+  touchAttachInterrupt(PORT_IN_TOUCH_SENSOR, interruptTouchSensor, TOUCH_SENSOR_THRESHOLD_ACTIVE );
+  /* Configure Touchpad as wakeup source */
+  esp_sleep_enable_touchpad_wakeup();
+  /* start deep sleep */
+  SERIAL_PRINTF("Going to sleep now\n");
+  esp_deep_sleep_start();
+}
+
+/**
  * @brief print wakeup reason
  * @author sanlike
  * @date 2021/03/03
  */
-void print_wakeup_reason() {
-  esp_sleep_wakeup_cause_t wakeup_reason;
-
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  switch(wakeup_reason)
+esp_sleep_wakeup_cause_t getWakeupReason() {
+  esp_sleep_wakeup_cause_t _wakeupReason = esp_sleep_get_wakeup_cause();
+#ifdef _DEBUG_PRINT // _DEBUG_PRINT
+  switch(_wakeupReason)
   {
     case ESP_SLEEP_WAKEUP_EXT0 :      SERIAL_PRINTF("Wakeup caused by external signal using RTC_IO\n"); break;
     case ESP_SLEEP_WAKEUP_EXT1 :      SERIAL_PRINTF("Wakeup caused by external signal using RTC_CNTL\n"); break;
     case ESP_SLEEP_WAKEUP_TIMER :     SERIAL_PRINTF("Wakeup caused by timer\n"); break;
     case ESP_SLEEP_WAKEUP_TOUCHPAD :  SERIAL_PRINTF("Wakeup caused by touchpad\n"); break;
     case ESP_SLEEP_WAKEUP_ULP :       SERIAL_PRINTF("Wakeup caused by ULP program\n"); break;
-    default :                         SERIAL_PRINTF("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+    default :                         SERIAL_PRINTF("Wakeup was not caused by deep sleep: %d\n", _wakeupReason); break;
   }
+#endif              // _DEBUG_PRINT
+  return _wakeupReason;
+}
+
+/**
+ * @brief print wakeup touchpad reason
+ * @author sanlike
+ * @date 2021/03/24
+ */
+touch_pad_t getWakeupTouchpadReason() {
+  touch_pad_t _touchPin = esp_sleep_get_touchpad_wakeup_status();
+#ifdef _DEBUG_PRINT // _DEBUG_PRINT
+  switch(_touchPin)
+  {
+    case 0  : SERIAL_PRINTF("Touch detected on GPIO  4\n"); break;
+    case 1  : SERIAL_PRINTF("Touch detected on GPIO  0\n"); break;
+    case 2  : SERIAL_PRINTF("Touch detected on GPIO  2\n"); break;
+    case 3  : SERIAL_PRINTF("Touch detected on GPIO 15\n"); break;
+    case 4  : SERIAL_PRINTF("Touch detected on GPIO 13\n"); break;
+    case 5  : SERIAL_PRINTF("Touch detected on GPIO 12\n"); break;
+    case 6  : SERIAL_PRINTF("Touch detected on GPIO 14\n"); break;
+    case 7  : SERIAL_PRINTF("Touch detected on GPIO 27\n"); break;
+    case 8  : SERIAL_PRINTF("Touch detected on GPIO 33\n"); break;
+    case 9  : SERIAL_PRINTF("Touch detected on GPIO 32\n"); break;
+    default : SERIAL_PRINTF("Wakeup not by touchpad :%d\n", _touchPin); break;
+  }
+#endif              // _DEBUG_PRINT
+  return _touchPin;
+}
+
+/**
+ * @brief タッチセンサ割り込み処理
+ * @author sanlike
+ * @date 2021/03/24
+ */
+void interruptTouchSensor(){
+  SERIAL_PRINTF("interruptTouchSensor()\n");
+  return;
 }
 
 /**
@@ -322,45 +373,47 @@ bool getEventQueue( EventID* _emEventID ) {
  * @author sanlike
  * @date 2021/03/02
  */
-void GpiControl() {
-  /* 入力：車両側)Lock Button LED状態 */
-  getDoorLockLed();
-  /* 入力：車両側)ACC状態 */
-  getAccStatus();
-#if 1 // touchセンサ入力テスト
+void GpiControl () {
   /* 入力：touchセンサ */
   getToucSensor();
-#endif // touchセンサ入力テスト  
 }
 
 /**
- * @brief ドアロックランプオフ監視タイマの開始
+ * @brief ドアロック信号制御タイマの開始
  * @author sanlike
- * @date 2021/03/08
+ * @date 2021/03/24
  */
-void startdoorLockLampOffTimer(){
+void startTickerDoorLockSignalControl(){
   // タイマが起動していたら停止する
-  stopdoorLockLampOffTimer();
+  stopTickerDoorLockSignalControl();
+  // active
+  digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
+  SERIAL_PRINTF("@@@ door lock signal : high\n");
   // タイマ開始
-  doorLockLampOffTimer.once(TICKER_CHECK_DOOR_LAMP, tickerDoorLockLampOffTimer);
+  tickerDoorLockSignalControl.once_ms(DOOR_LOCK_SIGNAL_ACTIVE_DURATION, tickerFuncDoorLockSignalControl);
 }
 
 /**
- * @brief ドアロックランプオフ監視タイマの停止
+ * @brief ドアロック信号制御タイマの停止
  * @author sanlike
- * @date 2021/03/08
+ * @date 2021/03/24
  */
-void stopdoorLockLampOffTimer(){
-  doorLockLampOffTimer.detach();
+void stopTickerDoorLockSignalControl(){
+  // diactive
+  digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
+  // detach timer
+  tickerDoorLockSignalControl.detach();
 }
 
 /**
- * @brief ドアロックランプオフ監視タイマ(ドアロックランプの2分後消灯機能を監視)
+ * @brief ドアロック信号制御(HIGH->LOW)
  * @author sanlike
- * @date 2021/03/06
+ * @date 2021/03/24
  */
-void tickerDoorLockLampOffTimer(){
-  setEventQueue(EVENT_DOOR_LOCK_LAMP_TIMEOUT);
+void tickerFuncDoorLockSignalControl(){
+  // diactive
+  digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
+  SERIAL_PRINTF("@@@ door lock signal : low\n");
 }
 
 /**
@@ -368,7 +421,7 @@ void tickerDoorLockLampOffTimer(){
  * @author sanlike
  * @date 2021/03/02
  */
-void tickerMainLoopTimer() {
+void tickerFuncMainLoop() {
   /* GPI制御処理 */
   GpiControl();
 
@@ -392,7 +445,7 @@ void tickerMainLoopTimer() {
  * @date 2021/03/12
  */
 void getToucSensor(){
-  uint16_t _value = touchRead(T6);
+  uint16_t _value = touchRead(PORT_IN_TOUCH_SENSOR);
   uint16_t _averageTouchSensor = 0; 
 
   static uint8_t _index = 0;
@@ -420,87 +473,55 @@ void getToucSensor(){
 
   // edge:low->high
   if( HIGH == _threshold && LOW == _thresholdOld ){
-    setEventQueue(EVENT_ACTIVE_TOUCH_SENSOR);
+    setEventQueue(EVENT_TOUCH_SENSOR_ACTIVE);
+  } else if( LOW == _threshold && HIGH == _thresholdOld ){
+    setEventQueue(EVENT_TOUCH_SENSOR_DEACTIVE);
   }
   _thresholdOld = _threshold;
 
 #ifdef _DEBUG_PRINT // _DEBUG_PRINT
   if(_value != _averageTouchSensor || _threshold != _thresholdOld ){
-    SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
+    // SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
   }
 #endif              // _DEBUG_PRINT
 }
 
 /**
- * @brief ドアロックLED入力処理
+ * @brief BLE Beaconスキャン処理
  * @author sanlike
  * @date 2021/03/02
  */
-void getDoorLockLed() {
-  static uint8_t _activeCount = 0;
-  static uint8_t _GpiControlStatusFix = 0xFF;
-  byte _GpiControlStatus = digitalRead(PORT_IN_LOCK_LED);
-  if (HIGH == _GpiControlStatus) {
-    //digitalWrite(PORT_OUT_ON_BORAD_LED, LOWk);
-    _activeCount = 0;
-    if (HIGH != _GpiControlStatusFix) {
-      setEventQueue(EVENT_LOCK_LED_OFF);
-      _GpiControlStatusFix = _GpiControlStatus;
-    }
-  } else {
-    //digitalWrite(PORT_OUT_ON_BORAD_LED, HIGH);
-    if (++_activeCount >= PORT_IN_AVERAGE_NUM) {
-      _activeCount = PORT_IN_AVERAGE_NUM;
-      if (LOW != _GpiControlStatusFix) {
-        setEventQueue(EVENT_LOCK_LED_ON);
-        _GpiControlStatusFix = _GpiControlStatus;
-      }
+void bleScan() {
+  static bool _doConnectBleDeviceOLD = false;
+  doConnectBleDevice = false;
+  // SERIAL_PRINTF("Scan start!\n");
+  BLEScanResults _foundDevices = pBLEScan->start(BLE_SCAN_TIME, false);
+  // SERIAL_PRINTF("Scan done!\n");
+  pBLEScan->clearResults(); // delete results fromBLEScan buffer to release memory
+
+  if ( doConnectBleDevice != _doConnectBleDeviceOLD ) {
+    if ( true == doConnectBleDevice ) {
+      // Edge:ON
+      setEventQueue(EVENT_FOUND_BEACON);
+    } else {
+      // Edge:OFF
+      setEventQueue(EVENT_LOST_BEACON);
     }
   }
+  _doConnectBleDeviceOLD = doConnectBleDevice;
 }
 
 /**
- * @brief ACC入力処理
+ * @brief ドアロック信号イベント判定処理
  * @author sanlike
- * @date 2021/03/02
+ * @date 2021/03/24
  */
-void getAccStatus() {
-  static uint8_t _activeCount = 0;
-  static uint8_t _GpiControlStatusFix = 0xFF;
-  byte _GpiControlStatus = digitalRead(PORT_IN_ACC);
-  if (HIGH == _GpiControlStatus) {
-    _activeCount = 0;
-    if (HIGH != _GpiControlStatusFix) {
-      setEventQueue(EVENT_ACC_OFF);
-      _GpiControlStatusFix = _GpiControlStatus;
-    }
-  } else {
-    if (++_activeCount >= PORT_IN_AVERAGE_NUM) {
-      _activeCount = PORT_IN_AVERAGE_NUM;
-      if (LOW != _GpiControlStatusFix) {
-        setEventQueue(EVENT_ACC_ON);
-        _GpiControlStatusFix = _GpiControlStatus;
-      }
-    }
+void jugeEventDoorLockSignal(){
+  if( BEACON_STATUS_FOUND == beaconStatusId && 
+      TOUCHPAD_STATUS_ACTIVE == touchpadStatusId ){
+    startTickerDoorLockSignalControl();
   }
-}
-
-/**
- * @brief ドアロック信号制御処理
- * @author sanlike
- * @date 2021/03/02
- */
-void doorLockSignalControl() {
-  static uint8_t _activeCounter = 0;
-  if (subEventID & SUB_EVENT_SET_DOOR_LOCK_SIGNAL) {
-    if ( ++_activeCounter >= DOOR_LOOK_ACTIVE_COUNT ) {
-      subEventID &= ~SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-    }
-    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
-  } else {
-    _activeCounter = 0;
-    digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
-  }
+  return;
 }
 
 /**
@@ -508,80 +529,41 @@ void doorLockSignalControl() {
  * @author sanlike
  * @date 2021/03/02
  */
-void EventControl(EventID _emEventID) {
+void eventControl(EventID _emEventID) {
   static BEACON_STATUS_ID _beaconStatusIdOld = BEACON_STATUS_NON;
-  static DOOR_STATUS_ID _doorStatusIdOld = DOOR_STATUS_NON;
+  static TOUCHPAD_STATUS_ID _touchpadStatusIdOld = TOUCHPAD_STATUS_NON;
   switch(_emEventID){
   case EVENT_LOST_BEACON:
-    beaconStatusID = BEACON_STATUS_LOST;
+    beaconStatusId = BEACON_STATUS_LOST;
     break;
   case EVENT_FOUND_BEACON:
-    beaconStatusID = BEACON_STATUS_FOUND;
+    beaconStatusId = BEACON_STATUS_FOUND;
+    jugeEventDoorLockSignal();
     break;
-  case EVENT_LOCK_LED_OFF:
-    if( DOOR_STATUS_UNLOCK_WAIT == doorStatusID || DOOR_STATUS_NON == doorStatusID ){
-      stopdoorLockLampOffTimer();
-      doorStatusID = DOOR_STATUS_UNLOCK;
-    }
+  case EVENT_TOUCH_SENSOR_DEACTIVE:
+    touchpadStatusId = TOUCHPAD_STATUS_DEACTIVE;
     break;
-  case EVENT_LOCK_LED_ON:
-    if( DOOR_STATUS_LOCK_WAIT == doorStatusID || DOOR_STATUS_NON == doorStatusID ){
-      stopdoorLockLampOffTimer();
-      doorStatusID = DOOR_STATUS_UNLOCK;
-    }
-    break;
-  case EVENT_ACC_OFF:
-    break;
-  case EVENT_ACC_ON:
-    SERIAL_PRINTF("Going to sleep now\n");
-    esp_deep_sleep_start();
-    break;
-  case EVENT_DOOR_LOCK_SIGNAL:
-    break;
-  case EVENT_DOOR_UNLOCK_SIGNAL:
-    break;
-  case EVENT_ACTIVE_TOUCH_SENSOR:
-    if( BEACON_STATUS_FOUND == beaconStatusID ){
-      switch( doorStatusID ) {
-        case DOOR_STATUS_LOCK:
-        case DOOR_STATUS_UNLOCK:
-          startdoorLockLampOffTimer();
-          doorStatusID = ( DOOR_STATUS_UNLOCK == doorStatusID ? DOOR_STATUS_LOCK_WAIT : DOOR_STATUS_UNLOCK_WAIT);
-          SERIAL_PRINTF("sub event : SUB_EVENT_SET_DOOR_LOCK_SIGNAL\n");
-          subEventID |= SUB_EVENT_SET_DOOR_LOCK_SIGNAL;
-          break;
-        default:
-          break;
-      }
-    }
-    break;
-  case EVENT_DOOR_LOCK_LAMP_TIMEOUT:
-    switch( doorStatusID ) {
-      case DOOR_STATUS_LOCK_WAIT:
-        doorStatusID = DOOR_STATUS_UNLOCK;
-        break;
-      case DOOR_STATUS_UNLOCK_WAIT:
-        doorStatusID = DOOR_STATUS_LOCK;
-        break;
-      default:
-        /* 破棄 */
-        break;
-    }
+  case EVENT_TOUCH_SENSOR_ACTIVE:
+    touchpadStatusId = TOUCHPAD_STATUS_ACTIVE;
+    jugeEventDoorLockSignal();
     break;
   default:
-    SERIAL_PRINTF("EventControl(): EVENT_NON\n");
+    SERIAL_PRINTF("eventControl(): EVENT_NON\n");
     break;
   }
 
-  // edge statusId
-  if( doorStatusID != _doorStatusIdOld ){
-    SERIAL_PRINTF("change doorStatusID %d(%s) -> %d(%s)\n", _doorStatusIdOld, dbgDoorStatusMsg[_doorStatusIdOld], doorStatusID, dbgDoorStatusMsg[doorStatusID]);
+  // edge beaconStatusId
+  if( beaconStatusId != _beaconStatusIdOld ){
+    SERIAL_PRINTF("change beaconStatusId %d(%s) -> %d(%s)\n", _beaconStatusIdOld, dbgBeaconStatusMsg[_beaconStatusIdOld], beaconStatusId, dbgBeaconStatusMsg[beaconStatusId]);
   }
-  _doorStatusIdOld = doorStatusID;
-  if( beaconStatusID != _beaconStatusIdOld ){
-    SERIAL_PRINTF("change beaconStatusID %d(%s) -> %d(%s)\n", _beaconStatusIdOld, dbgBeaconStatusMsg[_beaconStatusIdOld], beaconStatusID, dbgBeaconStatusMsg[beaconStatusID]);
+  _beaconStatusIdOld = beaconStatusId;
+
+  // edge touchpadStatusId
+  if( touchpadStatusId != _touchpadStatusIdOld ){
+    SERIAL_PRINTF("change touchpadStatusId %d(%s) -> %d(%s)\n", _touchpadStatusIdOld, dbgTouchpadStatusMsg[_touchpadStatusIdOld], touchpadStatusId, dbgTouchpadStatusMsg[touchpadStatusId]);
   }
-  _beaconStatusIdOld = beaconStatusID;
+  _touchpadStatusIdOld = touchpadStatusId;
+
 }
 
 /**
@@ -592,7 +574,7 @@ void EventControl(EventID _emEventID) {
 void dispLed() {
 #if 1
   //SERIAL_PRINTF("dispLed() doConnectBleDevice: %d\n",doConnectBleDevice);
-  digitalWrite(PORT_OUT_ON_BORAD_LED, (doConnectBleDevice == 1 ? HIGH : LOW));
+  digitalWrite(PORT_OUT_ON_BORAD_LED, (beaconStatusId == BEACON_STATUS_FOUND?HIGH:LOW));
 #else
   // blink
   static int ledBlink = HIGH;
@@ -602,42 +584,23 @@ void dispLed() {
 }
 
 /**
- * @brief BLE Beaconスキャン処理
- * @author sanlike
- * @date 2021/03/02
- */
-void bleScan() {
-  static byte _doConnectBleDeviceOLD = 0;
-  doConnectBleDevice = 0;
-  //BLEScanResults foundDevices = pBLEScan->start(SCAN_TIME/*, false*/);
-  //SERIAL_PRINTF("Scan start!\n");
-  pBLEScan->start(SCAN_TIME, false);
-  //SERIAL_PRINTF("Scan done!\n");
-  pBLEScan->clearResults(); // delete results fromBLEScan buffer to release memory
-
-  if (doConnectBleDevice) {
-    // Edge:ON
-    if (0 == _doConnectBleDeviceOLD) {
-      setEventQueue(EVENT_FOUND_BEACON);
-    }
-  } else {
-    // Edge:OFF
-    if (1 == _doConnectBleDeviceOLD) {
-      setEventQueue(EVENT_LOST_BEACON);
-    }
-  }
-  _doConnectBleDeviceOLD = doConnectBleDevice;
-}
-
-/**
  * @brief メインループ処理
  * @author sanlike
  * @date 2021/03/02
  */
 void loop() {
+  static uint16_t _beaconLostCounter = 0;
   bleScan();
-  //SERIAL_PRINTF("Internal Total heap %d, internal Free Heap %d\n", ESP.getHeapSize(), ESP.getFreeHeap());
-  delay(2000);
+#if 1   // test
+  if( false == doConnectBleDevice ){
+    /* デバイス未検知継続でスリープする：time= BLE_SCAN_TIME(5sec) * BLE_SLEEP_ENABLE_COUNT */
+    if( ++_beaconLostCounter > BLE_SLEEP_ENABLE_COUNT ){
+      setupDeepSleepEnableToutchpad(); 
+    } 
+  } else {
+    _beaconLostCounter = 0;
+  }
+#endif  // test
 }
 
 /**
@@ -645,15 +608,14 @@ void loop() {
  * @author sanlike
  * @date 2021/03/02
  */
-void task1( void *param )
+void taskEventControl( void *param )
 {
-  SERIAL_PRINTF( "task1() : start\n" );
+  SERIAL_PRINTF( "taskEventControl() : start\n" );
   EventID _emEventID;
   while ( 1 ) {
     getEventQueue(&_emEventID);
-    SERIAL_PRINTF( "task1(): id=%d msg=%s\n", _emEventID, dbgEventMsg[_emEventID] );
-    EventControl(_emEventID);
-    //vTaskDelay(1000);
+    SERIAL_PRINTF( "taskEventControl(): id=%d msg=%s\n", _emEventID, dbgEventMsg[_emEventID] );
+    eventControl(_emEventID);
   }
 }
 
@@ -662,20 +624,21 @@ void task1( void *param )
  * @author sanlike
  * @date 2021/03/02
  */
-void task2( void *param )
+void taskTimeControl( void *param )
 {
-  SERIAL_PRINTF( "task2() : start\n");
+  uint8_t _tm30000msCount = 0;
+  SERIAL_PRINTF( "taskTimeControl() : start\n");
   while ( 1 ) {
+    /* 400ms */
     if ( tm400msEvent ) {
       tm400msEvent = 0;
-      doorLockSignalControl();
     }
-    // 1sec
+    /* 1sec */
     if ( tm1000msEvent ) {
       tm1000msEvent = 0;
       dispLed();
     }
-    // 10sec
+    /* 10sec */
     if ( tm10000msEvent ) {
       tm10000msEvent = 0;
     }
