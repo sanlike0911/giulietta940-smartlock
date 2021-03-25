@@ -37,8 +37,8 @@
 #define AVEREGE_TOUCH_SENSOR_NUM      (uint8_t)4
 
 /* touch sensor ヒステリシスループ閾値 */
-#define TOUCH_SENSOR_THRESHOLD_ACTIVE   (uint16_t)30
-#define TOUCH_SENSOR_THRESHOLD_DEACTIVE (uint16_t)50
+#define TOUCH_SENSOR_THRESHOLD_ACTIVE   (uint16_t)30  /* active   :  0～30 */
+#define TOUCH_SENSOR_THRESHOLD_DEACTIVE (uint16_t)50  /* deactive : 50～   */
 
 /* debug Event Message */
 char *dbgEventMsg[] = {
@@ -481,7 +481,7 @@ void getToucSensor(){
 
 #ifdef _DEBUG_PRINT // _DEBUG_PRINT
   if(_value != _averageTouchSensor || _threshold != _thresholdOld ){
-    // SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
+    SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
   }
 #endif              // _DEBUG_PRINT
 }
