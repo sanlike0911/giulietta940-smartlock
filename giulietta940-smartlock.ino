@@ -18,10 +18,12 @@
 /* GPIO settings */
 #define PORT_OUT_ON_BORAD_LED         2
 #define PORT_OUT_DOOR_LOCK_SIGNAL     17
-#define PORT_IN_TOUCH_SENSOR          T6  /*  T6(GPIO14) */
+#define PORT_IN_TOUCH_SENSOR          32
+#define PORT_IN_ACC                   33
 
-/* touch sensor ID */
-#define TOUCH_SENSOR_ID               6   /*  T6(GPIO14) */
+/* wakeup using pin */
+#define GPIO_NUM_TOUCH_SENSOR         GPIO_NUM_32
+#define GPIO_NUM_ACC                  GPIO_NUM_33
 
 /* port[out] setting */
 #define DOOR_LOOK_SIGNAL_ACTIVE_EDGE_COUNT (uint8_t)2  /* active edge time = n × 400ms */
@@ -33,19 +35,19 @@
 /* event aueue settings */
 #define QUEUE_LENGTH                  8       /* event queue length */
 
-/* touch sensor 移動平均(n) */
-#define AVEREGE_TOUCH_SENSOR_NUM      (uint8_t)4
+/* in : acc power チャタリング防止 */
+#define PORT_IN_AVERAGE_ACC           (uint8_t)4
 
-/* touch sensor ヒステリシスループ閾値 */
-#define TOUCH_SENSOR_THRESHOLD_ACTIVE   (uint16_t)30  /* active   :  0～30 */
-#define TOUCH_SENSOR_THRESHOLD_DEACTIVE (uint16_t)50  /* deactive : 50～   */
+/* in : touch sensor チャタリング防止 */
+#define PORT_IN_AVERAGE_TOUCH         (uint8_t)2
 
 /* debug Event Message */
 char *dbgEventMsg[] = {
   "EVENT_NON",
   "EVENT_LOST_BEACON",
   "EVENT_FOUND_BEACON",
-  "EVENT_TOUCH_SENSOR_DEACTIVE",
+  "EVENT_ACC_OFF",
+  "EVENT_ACC_ON",
   "EVENT_TOUCH_SENSOR_ACTIVE",
   "EVENT_MAX"
 };
@@ -54,8 +56,9 @@ char *dbgEventMsg[] = {
 enum EventID {
   EVENT_NON = (uint8_t)0,
   EVENT_LOST_BEACON,
+  EVENT_ACC_OFF,
+  EVENT_ACC_ON,
   EVENT_FOUND_BEACON,
-  EVENT_TOUCH_SENSOR_DEACTIVE,
   EVENT_TOUCH_SENSOR_ACTIVE,
   EVENT_MAX
 };
@@ -114,17 +117,20 @@ void dispLed();
 void startTickerDoorLockSignalControl();
 void stopTickerDoorLockSignalControl();
 
-/* gpio */
+/* gpio control */
 void GpiControl();
+
+/* acc  */
+void getAccStatus();
 
 /* touch sensor */
 void getToucSensor();
-void setupDeepSleepEnableToutchpad();
-void interruptTouchSensor();
+
+/* setup deep sleep */
+void setupDeepSleepEnableExt0( gpio_num_t _gpio_num, int _leve );
 
 /* wikeup */
 esp_sleep_wakeup_cause_t getWakeupReason();
-touch_pad_t getWakeupTouchpadReason();
 
 /* event */
 void eventControl(EventID _emEventID);
@@ -215,6 +221,12 @@ void setup() {
   pinMode(PORT_OUT_DOOR_LOCK_SIGNAL, OUTPUT);
   digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
 
+  pinMode(PORT_IN_ACC, INPUT);
+  pinMode(PORT_IN_ACC, INPUT_PULLUP);
+
+  pinMode(PORT_IN_TOUCH_SENSOR, INPUT);
+  gpio_set_pull_mode(GPIO_NUM_TOUCH_SENSOR, GPIO_PULLDOWN_ONLY);
+
   /* esp32 device infomation */
   // SERIAL_PRINTF("--------------- esp32 device infomation ---------------\n");
   // SERIAL_PRINTF("Internal Total heap %d, internal Free Heap %d\n", ESP.getHeapSize(), ESP.getFreeHeap());
@@ -225,13 +237,9 @@ void setup() {
   /* wakeup reason */
   SERIAL_PRINTF("--------------- esp32 wakeup reason ---------------\n");
   esp_sleep_wakeup_cause_t _wakeupReason = getWakeupReason();
-  touch_pad_t _wakeupTouchpadReason = getWakeupTouchpadReason();
-#if 1
-  /* first boot? */
-  if( ESP_SLEEP_WAKEUP_UNDEFINED == _wakeupReason || TOUCH_SENSOR_ID != _wakeupTouchpadReason ){
-    setupDeepSleepEnableToutchpad();
+  if( ESP_SLEEP_WAKEUP_UNDEFINED == _wakeupReason || ESP_SLEEP_WAKEUP_EXT0 != _wakeupReason ){
+    setupDeepSleepEnableExt0(GPIO_NUM_TOUCH_SENSOR,1);
   }
-#endif
   
   /* create ticker */
   tickerMainLoop.attach_ms( TICKER_MAIN_LOOP_INTERVAL, tickerFuncMainLoop );
@@ -267,15 +275,18 @@ void setup() {
 }
 
 /**
- * @brief setup deep sleep enable toutchpad
+ * @brief setup deep sleep enable ext0
  * @author sanlike
- * @date 2021/03/24
+ * @date 2021/04/03
  */
-void setupDeepSleepEnableToutchpad(){
-  /* Setup interrupt on Touch Pad 6 (GPIO14) */
-  touchAttachInterrupt(PORT_IN_TOUCH_SENSOR, interruptTouchSensor, TOUCH_SENSOR_THRESHOLD_ACTIVE );
-  /* Configure Touchpad as wakeup source */
-  esp_sleep_enable_touchpad_wakeup();
+void setupDeepSleepEnableExt0(gpio_num_t _gpio_num, int _leve){
+  esp_err_t _ecode;
+  /* Configure ext0 as wakeup source */
+  _ecode = esp_sleep_enable_ext0_wakeup( _gpio_num, _leve );
+  if( ESP_OK != _ecode ){
+    SERIAL_PRINTF("setupDeepSleepEnableExt0 gpio:%d level:%d err:%d\n",_gpio_num,_leve,_ecode);
+    return;
+  }
   /* start deep sleep */
   SERIAL_PRINTF("Going to sleep now\n");
   esp_deep_sleep_start();
@@ -300,42 +311,6 @@ esp_sleep_wakeup_cause_t getWakeupReason() {
   }
 #endif              // _DEBUG_PRINT
   return _wakeupReason;
-}
-
-/**
- * @brief print wakeup touchpad reason
- * @author sanlike
- * @date 2021/03/24
- */
-touch_pad_t getWakeupTouchpadReason() {
-  touch_pad_t _touchPin = esp_sleep_get_touchpad_wakeup_status();
-#ifdef _DEBUG_PRINT // _DEBUG_PRINT
-  switch(_touchPin)
-  {
-    case 0  : SERIAL_PRINTF("Touch detected on GPIO  4\n"); break;
-    case 1  : SERIAL_PRINTF("Touch detected on GPIO  0\n"); break;
-    case 2  : SERIAL_PRINTF("Touch detected on GPIO  2\n"); break;
-    case 3  : SERIAL_PRINTF("Touch detected on GPIO 15\n"); break;
-    case 4  : SERIAL_PRINTF("Touch detected on GPIO 13\n"); break;
-    case 5  : SERIAL_PRINTF("Touch detected on GPIO 12\n"); break;
-    case 6  : SERIAL_PRINTF("Touch detected on GPIO 14\n"); break;
-    case 7  : SERIAL_PRINTF("Touch detected on GPIO 27\n"); break;
-    case 8  : SERIAL_PRINTF("Touch detected on GPIO 33\n"); break;
-    case 9  : SERIAL_PRINTF("Touch detected on GPIO 32\n"); break;
-    default : SERIAL_PRINTF("Wakeup not by touchpad :%d\n", _touchPin); break;
-  }
-#endif              // _DEBUG_PRINT
-  return _touchPin;
-}
-
-/**
- * @brief タッチセンサ割り込み処理
- * @author sanlike
- * @date 2021/03/24
- */
-void interruptTouchSensor(){
-  SERIAL_PRINTF("interruptTouchSensor()\n");
-  return;
 }
 
 /**
@@ -374,6 +349,8 @@ bool getEventQueue( EventID* _emEventID ) {
  * @date 2021/03/02
  */
 void GpiControl () {
+  /* 入力：車両側)ACC状態 */
+  getAccStatus();
   /* 入力：touchセンサ */
   getToucSensor();
 }
@@ -440,50 +417,52 @@ void tickerFuncMainLoop() {
 }
 
 /**
+ * @brief ACC入力処理
+ * @author sanlike
+ * @date 2021/03/02
+ */
+void getAccStatus() {
+  static uint8_t _activeCount = 0;
+  static uint8_t _gpioFix = 0xFF;
+  uint8_t _gpioNow = digitalRead(PORT_IN_ACC);
+  if (HIGH == _gpioNow) {
+    _activeCount = 0;
+    if (HIGH != _gpioFix) {
+      setEventQueue(EVENT_ACC_OFF);
+      _gpioFix = _gpioNow;
+    }
+  } else {
+    if (++_activeCount >= PORT_IN_AVERAGE_ACC) {
+      _activeCount = PORT_IN_AVERAGE_ACC;
+      if (LOW != _gpioFix) {
+        setEventQueue(EVENT_ACC_ON);
+        _gpioFix = _gpioNow;
+      }
+    }
+  }
+}
+
+/**
  * @brief タッチセンサ入力処理
  * @author sanlike
  * @date 2021/03/12
  */
 void getToucSensor(){
-  uint16_t _value = touchRead(PORT_IN_TOUCH_SENSOR);
-  uint16_t _averageTouchSensor = 0; 
-
-  static uint8_t _index = 0;
-  static uint16_t _touchSensor[AVEREGE_TOUCH_SENSOR_NUM];
-  static uint32_t _touchSensorSum = 0;
-
-  uint8_t _threshold = LOW;
-  static uint8_t _thresholdOld = LOW;
-
-  // 移動平均
-  if (_index == AVEREGE_TOUCH_SENSOR_NUM) _index = 0;
-  _touchSensorSum -= _touchSensor[_index];
-  _touchSensor[_index] = _value;
-  _touchSensorSum += _touchSensor[_index];
-  _index++;
-  _averageTouchSensor = _touchSensorSum / AVEREGE_TOUCH_SENSOR_NUM;
-
-  // active
-  if( _averageTouchSensor <= TOUCH_SENSOR_THRESHOLD_ACTIVE ){
-    _threshold = HIGH;
-  // deactive
-  } else if( _averageTouchSensor >= TOUCH_SENSOR_THRESHOLD_DEACTIVE ){
-    _threshold = LOW;
+  static uint8_t _activeCount = 0;
+  static uint8_t _gpioFix = LOW;
+  uint8_t _gpioNow = digitalRead(PORT_IN_TOUCH_SENSOR);
+  if ( HIGH == _gpioNow ) {
+    if (++_activeCount >= PORT_IN_AVERAGE_TOUCH) {
+      _activeCount = _gpioFix;
+      if( LOW ==  _gpioFix ) {
+        setEventQueue(EVENT_TOUCH_SENSOR_ACTIVE);
+        _gpioFix = _gpioNow;
+      }
+    }
+  } else {
+    _activeCount = 0;
+    _gpioFix = _gpioNow;
   }
-
-  // edge:low->high
-  if( HIGH == _threshold && LOW == _thresholdOld ){
-    setEventQueue(EVENT_TOUCH_SENSOR_ACTIVE);
-  } else if( LOW == _threshold && HIGH == _thresholdOld ){
-    setEventQueue(EVENT_TOUCH_SENSOR_DEACTIVE);
-  }
-  _thresholdOld = _threshold;
-
-#ifdef _DEBUG_PRINT // _DEBUG_PRINT
-  if(_value != _averageTouchSensor || _threshold != _thresholdOld ){
-    SERIAL_PRINTF("touchRead() now:%d average:%d threshold:%d\n", _value, _averageTouchSensor,_threshold);  
-  }
-#endif              // _DEBUG_PRINT
 }
 
 /**
@@ -540,8 +519,10 @@ void eventControl(EventID _emEventID) {
     beaconStatusId = BEACON_STATUS_FOUND;
     jugeEventDoorLockSignal();
     break;
-  case EVENT_TOUCH_SENSOR_DEACTIVE:
-    touchpadStatusId = TOUCHPAD_STATUS_DEACTIVE;
+  case EVENT_ACC_OFF:
+    break;
+  case EVENT_ACC_ON:
+    setupDeepSleepEnableExt0(GPIO_NUM_ACC, 1);
     break;
   case EVENT_TOUCH_SENSOR_ACTIVE:
     touchpadStatusId = TOUCHPAD_STATUS_ACTIVE;
@@ -595,7 +576,7 @@ void loop() {
   if( false == doConnectBleDevice ){
     /* デバイス未検知継続でスリープする：time= BLE_SCAN_TIME(5sec) * BLE_SLEEP_ENABLE_COUNT */
     if( ++_beaconLostCounter > BLE_SLEEP_ENABLE_COUNT ){
-      setupDeepSleepEnableToutchpad(); 
+      setupDeepSleepEnableExt0(GPIO_NUM_TOUCH_SENSOR,1);
     } 
   } else {
     _beaconLostCounter = 0;
