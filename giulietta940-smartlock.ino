@@ -8,18 +8,23 @@
 #include <BLEBeacon.h>
 #include "myBeacon.h"
 
-#define _DEBUG_PRINT
+#define _DEBUG
+
+/* BLE device uuid */
+#define BLE_ADVERTISED_DEVIECE_UUID   "cb3b0426-10ec-45bd-b58e-f2858c0dbc2b"
 
 /* BLS settings */
 #define BLE_SCAN_TIME           (uint32_t)5 /* In seconds */
-#define BLE_SLEEP_ENABLE_COUNT  (uint16_t)6  /* time = BLE_SCAN_TIME × BLE_SLEEP_ENABLE_COUNT*/
-#define BLE_ADVERTISED_DEVIECE_UUID   "cb3b0426-10ec-45bd-b58e-f2858c0dbc2b"
+#define BLE_SLEEP_ENABLE_COUNT  (uint16_t)6 /* time = BLE_SCAN_TIME × BLE_SLEEP_ENABLE_COUNT*/
 
 /* GPIO settings */
 #define PORT_OUT_ON_BORAD_LED         2
 #define PORT_OUT_DOOR_LOCK_SIGNAL     17
 #define PORT_IN_TOUCH_SENSOR          32
 #define PORT_IN_ACC                   33
+#ifdef _DEBUG // debug
+#define PORT_OUT_DEBUG                27
+#endif        // debug
 
 /* wakeup using pin */
 #define GPIO_NUM_TOUCH_SENSOR         GPIO_NUM_32
@@ -41,6 +46,9 @@
 /* in : touch sensor チャタリング防止 */
 #define PORT_IN_AVERAGE_TOUCH         (uint8_t)2
 
+/* parameters */
+#define UINT8_ALLF                    0xFF
+
 /* debug Event Message */
 char *dbgEventMsg[] = {
   "EVENT_NON",
@@ -56,9 +64,9 @@ char *dbgEventMsg[] = {
 enum EventID {
   EVENT_NON = (uint8_t)0,
   EVENT_LOST_BEACON,
+  EVENT_FOUND_BEACON,
   EVENT_ACC_OFF,
   EVENT_ACC_ON,
-  EVENT_FOUND_BEACON,
   EVENT_TOUCH_SENSOR_ACTIVE,
   EVENT_MAX
 };
@@ -71,12 +79,28 @@ char *dbgBeaconStatusMsg[] = {
   "BEACON_STATUS_MAX",
 };
 
-// /* beacon status id */
+/* beacon status id */
 enum BEACON_STATUS_ID {
   BEACON_STATUS_NON = (uint8_t)0,
   BEACON_STATUS_LOST,
   BEACON_STATUS_FOUND,
   BEACON_STATUS_MAX
+};
+
+/* debug door status message */
+char *dbgDoorStatusMsg[] = {
+  "DOOR_STATUS_NON",
+  "DOOR_STATUS_OPEN",
+  "DOOR_STATUS_CLOSE",
+  "DOOR_STATUS_MAX",
+};
+
+/* door status id */
+enum DOOR_STATUS_ID {
+  DOOR_STATUS_NON = (uint8_t)0,
+  DOOR_STATUS_OPEN,
+  DOOR_STATUS_CLOSE,
+  DOOR_STATUS_MAX
 };
 
 /* debug touchpad status message */
@@ -87,7 +111,7 @@ char *dbgTouchpadStatusMsg[] = {
   "TOUCHPAD_STATUS_MAX",
 };
 
-// /* touchpad status id */
+/* touchpad status id */
 enum TOUCHPAD_STATUS_ID {
   TOUCHPAD_STATUS_NON = (uint8_t)0,
   TOUCHPAD_STATUS_ACTIVE,
@@ -98,11 +122,11 @@ enum TOUCHPAD_STATUS_ID {
 //*****************************************************************************
 // macro function
 //*****************************************************************************
-#ifdef _DEBUG_PRINT // _DEBUG_PRINT
+#ifdef _DEBUG // _DEBUG
  #define SERIAL_PRINTF(...)  Serial.printf(__VA_ARGS__)
-#else               // _DEBUG_PRINT
+#else         // _DEBUG
  #define SERIAL_PRINTF(...)
-#endif              // _DEBUG_PRINT
+#endif        // _DEBUG
 
 //*****************************************************************************
 // prototypes
@@ -191,11 +215,11 @@ public:
         if (_mybcn.IsAdvertisedDevice(BLE_ADVERTISED_DEVIECE_UUID)) {
           doConnectBleDevice = true;
           BLEDevice::getScan()->stop();
-#ifdef _DEBUG_PRINT   // _DEBUG_PRINT
+#ifdef _DEBUG   // _DEBUG
           // char uuid[37];
           // _mybcn.getUUID().toCharArray(uuid, 37);
           // SERIAL_PRINTF("Found a device!! UUID: %s, Major: %d, Minor: %d, RSSI: %d \n", uuid, _mybcn.getMajor(), _mybcn.getMinor(), _mybcn.getRSSI());
-#endif                // _DEBUG_PRINT
+#endif          // _DEBUG
         } else {}
       } else {}
     }
@@ -216,7 +240,7 @@ void setup() {
 
   /* create gpio */
   pinMode(PORT_OUT_ON_BORAD_LED, OUTPUT);
-  digitalWrite(PORT_OUT_ON_BORAD_LED, HIGH);
+  digitalWrite(PORT_OUT_ON_BORAD_LED, LOW);
 
   pinMode(PORT_OUT_DOOR_LOCK_SIGNAL, OUTPUT);
   digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
@@ -226,6 +250,10 @@ void setup() {
 
   pinMode(PORT_IN_TOUCH_SENSOR, INPUT);
   gpio_set_pull_mode(GPIO_NUM_TOUCH_SENSOR, GPIO_PULLDOWN_ONLY);
+#ifdef _DEBUG // debug
+  pinMode(PORT_OUT_DEBUG, OUTPUT);
+  digitalWrite(PORT_OUT_DEBUG, LOW);
+#endif        // debug
 
   /* esp32 device infomation */
   // SERIAL_PRINTF("--------------- esp32 device infomation ---------------\n");
@@ -271,7 +299,7 @@ void setup() {
   BLEDevice::init("");
   pBLEScan = BLEDevice::getScan(); //create new scan
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setActiveScan(false); //active scan uses more power, but get results faster
+  pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
 }
 
 /**
@@ -299,7 +327,7 @@ void setupDeepSleepEnableExt0(gpio_num_t _gpio_num, int _leve){
  */
 esp_sleep_wakeup_cause_t getWakeupReason() {
   esp_sleep_wakeup_cause_t _wakeupReason = esp_sleep_get_wakeup_cause();
-#ifdef _DEBUG_PRINT // _DEBUG_PRINT
+#ifdef _DEBUG // _DEBUG
   switch(_wakeupReason)
   {
     case ESP_SLEEP_WAKEUP_EXT0 :      SERIAL_PRINTF("Wakeup caused by external signal using RTC_IO\n"); break;
@@ -309,7 +337,7 @@ esp_sleep_wakeup_cause_t getWakeupReason() {
     case ESP_SLEEP_WAKEUP_ULP :       SERIAL_PRINTF("Wakeup caused by ULP program\n"); break;
     default :                         SERIAL_PRINTF("Wakeup was not caused by deep sleep: %d\n", _wakeupReason); break;
   }
-#endif              // _DEBUG_PRINT
+#endif        // _DEBUG
   return _wakeupReason;
 }
 
@@ -366,6 +394,9 @@ void startTickerDoorLockSignalControl(){
   // active
   digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, HIGH);
   SERIAL_PRINTF("@@@ door lock signal : high\n");
+#ifdef _DEBUG // debug
+  digitalWrite(PORT_OUT_DEBUG, HIGH);
+#endif        // debug
   // タイマ開始
   tickerDoorLockSignalControl.once_ms(DOOR_LOCK_SIGNAL_ACTIVE_DURATION, tickerFuncDoorLockSignalControl);
 }
@@ -391,6 +422,9 @@ void tickerFuncDoorLockSignalControl(){
   // diactive
   digitalWrite(PORT_OUT_DOOR_LOCK_SIGNAL, LOW);
   SERIAL_PRINTF("@@@ door lock signal : low\n");
+#ifdef _DEBUG // debug
+  digitalWrite(PORT_OUT_DEBUG, LOW);
+#endif        // debug
 }
 
 /**
@@ -423,7 +457,7 @@ void tickerFuncMainLoop() {
  */
 void getAccStatus() {
   static uint8_t _activeCount = 0;
-  static uint8_t _gpioFix = 0xFF;
+  static uint8_t _gpioFix = UINT8_ALLF;
   uint8_t _gpioNow = digitalRead(PORT_IN_ACC);
   if (HIGH == _gpioNow) {
     _activeCount = 0;
@@ -449,12 +483,12 @@ void getAccStatus() {
  */
 void getToucSensor(){
   static uint8_t _activeCount = 0;
-  static uint8_t _gpioFix = LOW;
+  static uint8_t _gpioFix = UINT8_ALLF;
   uint8_t _gpioNow = digitalRead(PORT_IN_TOUCH_SENSOR);
   if ( HIGH == _gpioNow ) {
     if (++_activeCount >= PORT_IN_AVERAGE_TOUCH) {
       _activeCount = _gpioFix;
-      if( LOW ==  _gpioFix ) {
+      if( HIGH !=  _gpioFix ) {
         setEventQueue(EVENT_TOUCH_SENSOR_ACTIVE);
         _gpioFix = _gpioNow;
       }
