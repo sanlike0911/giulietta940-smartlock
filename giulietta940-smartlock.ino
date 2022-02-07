@@ -10,6 +10,9 @@
 
 #define _DEBUG
 
+/* enable deep sleep ext0 */
+#define _ENABLE_DEEP_SLEEP_EXT0
+
 /* BLE device uuid */
 #define BLE_ADVERTISED_DEVIECE_UUID   "cb3b0426-10ec-45bd-b58e-f2858c0dbc2b"
 
@@ -57,6 +60,7 @@ char *dbgEventMsg[] = {
   "EVENT_ACC_OFF",
   "EVENT_ACC_ON",
   "EVENT_TOUCH_SENSOR_ACTIVE",
+  "EVENT_DOOR_LOCK_SIGNAL",
   "EVENT_MAX"
 };
 
@@ -68,6 +72,7 @@ enum EventID {
   EVENT_ACC_OFF,
   EVENT_ACC_ON,
   EVENT_TOUCH_SENSOR_ACTIVE,
+  EVENT_DOOR_LOCK_SIGNAL,
   EVENT_MAX
 };
 
@@ -150,8 +155,8 @@ void getAccStatus();
 /* touch sensor */
 void getToucSensor();
 
-/* setup deep sleep */
-void setupDeepSleepEnableExt0( gpio_num_t _gpio_num, int _leve );
+/* start deep sleep ext0 */
+void startDeepSleepExt0( gpio_num_t _gpio_num, int _leve );
 
 /* wikeup */
 esp_sleep_wakeup_cause_t getWakeupReason();
@@ -160,7 +165,6 @@ esp_sleep_wakeup_cause_t getWakeupReason();
 void eventControl(EventID _emEventID);
 bool setEventQueue( EventID _emEventID );
 bool getEventQueue( EventID* _emEventID );
-void jugeEventDoorLockSignal();
 
 /* task */
 void taskEventControl( void *param );
@@ -266,7 +270,7 @@ void setup() {
   SERIAL_PRINTF("--------------- esp32 wakeup reason ---------------\n");
   esp_sleep_wakeup_cause_t _wakeupReason = getWakeupReason();
   if( ESP_SLEEP_WAKEUP_UNDEFINED == _wakeupReason || ESP_SLEEP_WAKEUP_EXT0 != _wakeupReason ){
-    setupDeepSleepEnableExt0(GPIO_NUM_TOUCH_SENSOR,1);
+    startDeepSleepExt0(GPIO_NUM_TOUCH_SENSOR,1);  /* high priority */ 
   }
   
   /* create ticker */
@@ -303,21 +307,23 @@ void setup() {
 }
 
 /**
- * @brief setup deep sleep enable ext0
+ * @brief setup deep sleep ext0
  * @author sanlike
  * @date 2021/04/03
  */
-void setupDeepSleepEnableExt0(gpio_num_t _gpio_num, int _leve){
+void startDeepSleepExt0(gpio_num_t _gpio_num, int _leve){
+#ifdef _ENABLE_DEEP_SLEEP_EXT0
   esp_err_t _ecode;
   /* Configure ext0 as wakeup source */
   _ecode = esp_sleep_enable_ext0_wakeup( _gpio_num, _leve );
   if( ESP_OK != _ecode ){
-    SERIAL_PRINTF("setupDeepSleepEnableExt0 gpio:%d level:%d err:%d\n",_gpio_num,_leve,_ecode);
+    SERIAL_PRINTF("startDeepSleepExt0 gpio:%d level:%d err:%d\n",_gpio_num,_leve,_ecode);
     return;
   }
   /* start deep sleep */
   SERIAL_PRINTF("Going to sleep now\n");
   esp_deep_sleep_start();
+#endif
 }
 
 /**
@@ -525,19 +531,6 @@ void bleScan() {
 }
 
 /**
- * @brief ドアロック信号イベント判定処理
- * @author sanlike
- * @date 2021/03/24
- */
-void jugeEventDoorLockSignal(){
-  if( BEACON_STATUS_FOUND == beaconStatusId && 
-      TOUCHPAD_STATUS_ACTIVE == touchpadStatusId ){
-    startTickerDoorLockSignalControl();
-  }
-  return;
-}
-
-/**
  * @brief イベント制御処理
  * @author sanlike
  * @date 2021/03/02
@@ -551,16 +544,18 @@ void eventControl(EventID _emEventID) {
     break;
   case EVENT_FOUND_BEACON:
     beaconStatusId = BEACON_STATUS_FOUND;
-    jugeEventDoorLockSignal();
     break;
   case EVENT_ACC_OFF:
     break;
   case EVENT_ACC_ON:
-    setupDeepSleepEnableExt0(GPIO_NUM_ACC, 1);
+    startDeepSleepExt0(GPIO_NUM_ACC, 1); /* high priority */ 
     break;
   case EVENT_TOUCH_SENSOR_ACTIVE:
     touchpadStatusId = TOUCHPAD_STATUS_ACTIVE;
-    jugeEventDoorLockSignal();
+    if( BEACON_STATUS_FOUND == beaconStatusId ) setEventQueue(EVENT_DOOR_LOCK_SIGNAL);
+    break;
+  case EVENT_DOOR_LOCK_SIGNAL:
+    startTickerDoorLockSignalControl();
     break;
   default:
     SERIAL_PRINTF("eventControl(): EVENT_NON\n");
@@ -604,18 +599,21 @@ void dispLed() {
  * @date 2021/03/02
  */
 void loop() {
+
   static uint16_t _beaconLostCounter = 0;
+
   bleScan();
-#if 1   // test
+
   if( false == doConnectBleDevice ){
     /* デバイス未検知継続でスリープする：time= BLE_SCAN_TIME(5sec) * BLE_SLEEP_ENABLE_COUNT */
     if( ++_beaconLostCounter > BLE_SLEEP_ENABLE_COUNT ){
-      setupDeepSleepEnableExt0(GPIO_NUM_TOUCH_SENSOR,1);
+      _beaconLostCounter = 0;
+      startDeepSleepExt0(GPIO_NUM_TOUCH_SENSOR,1); /* high priority */ 
     } 
   } else {
     _beaconLostCounter = 0;
   }
-#endif  // test
+
 }
 
 /**
